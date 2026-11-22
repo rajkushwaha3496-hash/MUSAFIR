@@ -16,8 +16,8 @@ export const TestimonialsSection: React.FC<TestimonialsSectionProps> = ({
           Traveler Stories
         </p>
         <h2 className="font-sans text-3xl sm:text-4xl font-semibold tracking-tight text-[#141714]">
-          Memories from{' '}
-          <em className="font-editorial italic font-medium">Around the World</em>
+          Memories Across{' '}
+          <em className="font-editorial italic font-medium">Incredible India</em>
         </h2>
       </div>
 

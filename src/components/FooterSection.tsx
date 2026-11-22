@@ -124,7 +124,7 @@ export const FooterSection: React.FC<FooterSectionProps> = ({
               </div>
               <p className="text-sm text-white/70 leading-relaxed max-w-xs">
                 Thoughtful, easy-to-plan journeys across India’s sacred temples,
-                world wonders, and peaceful international landscapes.
+                heritage wonders, Himalayan peaks, and tropical islands.
               </p>
               <div className="flex items-center gap-3 pt-2">
                 <a
@@ -193,7 +193,7 @@ export const FooterSection: React.FC<FooterSectionProps> = ({
                 Popular Destinations
               </p>
               <ul className="grid grid-cols-2 gap-y-2.5 gap-x-4 text-sm text-white/80">
-                {destinations.slice(0, 8).map((dest) => (
+                {destinations.slice(0, 10).map((dest) => (
                   <li key={dest.id}>
                     <button
                       type="button"

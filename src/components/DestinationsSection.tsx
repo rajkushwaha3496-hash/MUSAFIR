@@ -46,7 +46,7 @@ export const DestinationsSection: React.FC<DestinationsSectionProps> = ({
       <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-6 mb-10">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#1d4738] mb-2">
-            Indian Wonders, Temples &amp; Global Escapes
+            All Over India · Verified Wonders, Temples, Hills &amp; Coasts
           </p>
           <h2 className="font-sans text-3xl sm:text-4xl font-semibold tracking-tight text-[#141714]">
             Popular{' '}

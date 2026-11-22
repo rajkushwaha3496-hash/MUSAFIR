@@ -67,8 +67,8 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
             </h1>
 
             <p className="text-base sm:text-lg text-white/90 font-normal leading-relaxed max-w-2xl mx-auto">
-              Discover Indian wonders, sacred temples, and serene mountain
-              escapes around the world—crafted simply in Rupees with clear
+              Discover Indian wonders, sacred temples, Himalayan valleys, and
+              coastal islands all over India—crafted simply in Rupees with clear
               step-by-step plans.
             </p>
           </div>

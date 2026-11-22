@@ -41,8 +41,8 @@ export const PackagesSection: React.FC<PackagesSectionProps> = ({
           </h2>
         </div>
         <p className="text-sm sm:text-base text-[#5a6159] max-w-md">
-          Simple, transparent all-inclusive journeys in Indian Rupees with
-          comfortable stays, guided temple &amp; wonder visits, and private transfers.
+          Simple, budget-friendly all-inclusive journeys in Indian Rupees with
+          comfortable stays, guided temple &amp; wonder visits, and clear transfers.
         </p>
       </div>
 

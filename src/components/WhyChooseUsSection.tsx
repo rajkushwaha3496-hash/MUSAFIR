@@ -46,7 +46,7 @@ export const WhyChooseUsSection: React.FC = () => {
             </h2>
             <p className="text-sm sm:text-base text-[#5a6159] leading-relaxed">
               Har safar ek nayi kahani—simple planning, clear Rupee pricing, and
-              calm journeys across India and the world.
+              calm, verified journeys across every corner of India.
             </p>
           </div>
 
