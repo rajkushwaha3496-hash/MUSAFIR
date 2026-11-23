@@ -1,16 +1,12 @@
 import React from 'react';
-import { Calendar, Loader2, MapPin, Search, Users } from 'lucide-react';
+import { Calendar, Loader2, Search, Users } from 'lucide-react';
 import { HERO_MOUNTAIN_IMAGE } from '../data/travelData.ts';
-import type { MusafirDestination } from '../types.ts';
 
 interface HeroSectionProps {
-  destinations: MusafirDestination[];
-  destinationQuery: string;
   checkIn: string;
   checkOut: string;
   travelers: number;
   searching: boolean;
-  onDestinationQueryChange: (val: string) => void;
   onCheckInChange: (val: string) => void;
   onCheckOutChange: (val: string) => void;
   onTravelersChange: (val: number) => void;
@@ -18,13 +14,10 @@ interface HeroSectionProps {
 }
 
 export const HeroSection: React.FC<HeroSectionProps> = ({
-  destinations,
-  destinationQuery,
   checkIn,
   checkOut,
   travelers,
   searching,
-  onDestinationQueryChange,
   onCheckInChange,
   onCheckOutChange,
   onTravelersChange,
@@ -76,35 +69,11 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           {/* White Rounded Search & Booking Widget */}
           <form
             onSubmit={onSearchTrips}
-            className="bg-white rounded-[24px] p-4 sm:p-5 shadow-[0_20px_50px_rgba(0,0,0,0.2)] max-w-5xl w-full mx-auto animate-fade-up"
+            className="bg-white rounded-[24px] p-4 sm:p-5 shadow-[0_20px_50px_rgba(0,0,0,0.2)] max-w-4xl w-full mx-auto animate-fade-up"
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-center">
-              {/* Destination */}
-              <div className="lg:col-span-3 px-2 sm:border-r border-black/10">
-                <label
-                  htmlFor="hero-destination"
-                  className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#5a6159] mb-1"
-                >
-                  <MapPin className="w-3.5 h-3.5 text-[#1d4738]" />
-                  <span>Destination</span>
-                </label>
-                <select
-                  id="hero-destination"
-                  value={destinationQuery}
-                  onChange={(e) => onDestinationQueryChange(e.target.value)}
-                  className="w-full bg-transparent text-sm font-semibold text-[#141714] focus:outline-none cursor-pointer py-1"
-                >
-                  <option value="all">All Destinations</option>
-                  {destinations.map((dest) => (
-                    <option key={dest.id} value={dest.id}>
-                      {dest.name}, {dest.country}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               {/* Check-in Date */}
-              <div className="lg:col-span-3 px-2 lg:border-r border-black/10">
+              <div className="lg:col-span-4 px-2 sm:border-r border-black/10">
                 <label
                   htmlFor="hero-checkin"
                   className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#5a6159] mb-1"
@@ -122,7 +91,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               </div>
 
               {/* Check-out Date */}
-              <div className="lg:col-span-2 px-2 sm:border-r border-black/10">
+              <div className="lg:col-span-4 px-2 lg:border-r border-black/10">
                 <label
                   htmlFor="hero-checkout"
                   className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#5a6159] mb-1"

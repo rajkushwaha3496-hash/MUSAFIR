@@ -55,28 +55,9 @@ const DEFAULT_FINDER: StudentFinderState = {
   sort: 'best-match',
 };
 
-const HERO_SEARCH_KEYWORDS: Record<string, string> = {
-  'agra-taj': 'Taj Mahal',
-  'varanasi-kashi': 'Varanasi',
-  kedarnath: 'Kedarnath',
-  rishikesh: 'Rishikesh',
-  munnar: 'Munnar',
-  jaipur: 'Jaipur',
-  amritsar: 'Amritsar',
-  hampi: 'Hampi',
-  madurai: 'Madurai',
-  manali: 'Manali',
-  shimla: 'Shimla',
-  'leh-ladakh': 'Leh Ladakh',
-  goa: 'Goa',
-  alleppey: 'Alleppey',
-  udaipur: 'Udaipur',
-  andaman: 'Andaman',
-};
-
 export default function App() {
   // Hero search & preserved booking state
-  const [destinationQuery, setDestinationQuery] = useState('all');
+  const destinationQuery = 'all';
   const [checkIn, setCheckIn] = useState('2027-06-12');
   const [checkOut, setCheckOut] = useState('2027-06-19');
   const [heroTravelers, setHeroTravelers] = useState(2);
@@ -297,7 +278,6 @@ export default function App() {
     setSelectedRegion('All');
     setSelectedVerification('All');
     setStudentFriendlyOnly(false);
-    setDestinationQuery('all');
     setPage(1);
     setRefreshNonce((n) => n + 1);
   }, []);
@@ -328,15 +308,7 @@ export default function App() {
     setSearching(true);
     setSelectedRegion('All');
     setSelectedState('All');
-
-    const selected = DESTINATIONS.find((d) => d.id === destinationQuery);
-    if (selected) {
-      const keyword =
-        HERO_SEARCH_KEYWORDS[selected.id] || selected.name.split('&')[0].trim();
-      setSearchQuery(keyword);
-    } else {
-      setSearchQuery('');
-    }
+    setSearchQuery('');
     setFinder((prev) => ({ ...prev, travelers: heroTravelers }));
     setPage(1);
 
@@ -344,13 +316,9 @@ export default function App() {
       setSearching(false);
       scrollToSection('destinations');
       showToast(
-        selected
-          ? `Showing curated escapes for ${selected.name} (${heroTravelers} ${
-              heroTravelers === 1 ? 'traveler' : 'travelers'
-            }).`
-          : `Showing Indian destinations for ${heroTravelers} ${
-              heroTravelers === 1 ? 'traveler' : 'travelers'
-            }.`
+        `Showing Indian destinations for ${heroTravelers} ${
+          heroTravelers === 1 ? 'traveler' : 'travelers'
+        }.`
       );
     }, 240);
   };
@@ -479,13 +447,10 @@ export default function App() {
 
       <main>
         <HeroSection
-          destinations={DESTINATIONS}
-          destinationQuery={destinationQuery}
           checkIn={checkIn}
           checkOut={checkOut}
           travelers={heroTravelers}
           searching={searching}
-          onDestinationQueryChange={setDestinationQuery}
           onCheckInChange={handleCheckInChange}
           onCheckOutChange={handleCheckOutChange}
           onTravelersChange={setHeroTravelers}
