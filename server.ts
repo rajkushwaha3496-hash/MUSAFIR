@@ -352,6 +352,16 @@ async function startServer() {
     res.json({ ok: true, destinationsLoaded: db.destinations.length });
   });
 
+  app.get('/api/maps-config', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      apiKey:
+        process.env.VITE_GOOGLE_MAPS_API_KEY ||
+        process.env.GOOGLE_MAPS_API_KEY ||
+        '',
+    });
+  });
+
   app.get('/api/destinations/stats', (_req, res) => {
     const db = readDestinationsDb();
     res.json(buildFullStatsPayload(db.destinations, db.generatedAt));

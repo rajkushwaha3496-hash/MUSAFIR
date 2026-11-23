@@ -2,6 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { OFFICIAL_STATE_TOURISM_URLS, RAW_INDIA_DESTINATIONS } from './india-seed-data.mjs';
+import {
+  resolvePlaceClimate,
+  resolvePlaceFood,
+  resolvePlaceHowToReach,
+} from './place-metadata.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,7 +207,10 @@ async function fetchWikipediaInfo(name, state) {
 function buildStructuredDetails(row, wiki, gallery) {
   const [name, state, district, region, category, seedLat, seedLon] = row;
   const defaults = CATEGORY_DEFAULTS[category] || CATEGORY_DEFAULTS['Heritage'];
-  const foods = REGIONAL_FOODS[state] || ['Regional Thali', 'Local Street Food', 'Chai & Snacks'];
+  const id = slugify(`${name}-${state}`);
+  const foods = resolvePlaceFood({ id, name, state, district, category });
+  const climate = resolvePlaceClimate({ id, name, state, district, category });
+  const howToReach = resolvePlaceHowToReach({ id, name, state, district, category });
   const officialUrl = OFFICIAL_STATE_TOURISM_URLS[state] || 'https://www.incredibleindia.gov.in';
 
   // Use Wikipedia coords only if inside India bounding box (lat 6..38, lon 67..98)
@@ -301,8 +309,8 @@ function buildStructuredDetails(row, wiki, gallery) {
     historySpeciality,
     thingsToDo,
     suggestedItinerary,
-    bestSeason: defaults.season,
-    weatherNotes: `Best weather typically during ${defaults.season}. Verify monsoon or snowfall advisories before departure.`,
+    bestSeason: climate.bestSeason,
+    weatherNotes: climate.weatherNotes,
     idealDuration: defaults.duration,
     recommendedDays: defaults.days,
     nearbyAttractions: gallery.slice(0, 4).map((g) => g.title),
@@ -315,7 +323,7 @@ function buildStructuredDetails(row, wiki, gallery) {
       estimatedDailyStudentCostInr: estMinDayTotal,
       isEstimate: true,
     },
-    howToReach: `Reach ${district} by Indian Railways or state bus network, then take local shared transport or auto-rickshaw to ${name}.`,
+    howToReach,
     transportOptions,
     hostelSuggestions,
     localFood: foods,

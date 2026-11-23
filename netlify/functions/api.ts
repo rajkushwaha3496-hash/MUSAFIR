@@ -216,6 +216,24 @@ export default async (req: Request): Promise<Response> => {
     });
   }
 
+  if (method === 'GET' && cleanPath === '/maps-config') {
+    return new Response(
+      JSON.stringify({
+        apiKey:
+          process.env.VITE_GOOGLE_MAPS_API_KEY ||
+          process.env.GOOGLE_MAPS_API_KEY ||
+          '',
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+      }
+    );
+  }
+
   if (method === 'GET' && cleanPath === '/destinations/stats') {
     return jsonResponse(buildFullStatsPayload(db.destinations, db.generatedAt));
   }
