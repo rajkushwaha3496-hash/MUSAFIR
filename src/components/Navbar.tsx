@@ -12,11 +12,11 @@ interface NavbarProps {
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
-  { id: 'destinations', label: 'Destinations' },
-  { id: 'explore', label: 'Explore' },
+  { id: 'student-finder', label: 'Student Finder' },
+  { id: 'destinations', label: '500+ Places' },
   { id: 'packages', label: 'Packages' },
   { id: 'about', label: 'About Us' },
-  { id: 'contact', label: 'Contact' },
+  { id: 'verification-report', label: 'Data Report' },
 ];
 
 export const Navbar: React.FC<NavbarProps> = ({
