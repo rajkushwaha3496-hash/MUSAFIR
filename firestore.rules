@@ -1,0 +1,221 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Shared security primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'rajkushwaha3496@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'role', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == request.auth.uid && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$')
+        && data.role == 'user'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'bookingCode', 'userId', 'destinationId', 'destinationName',
+          'packageTitle', 'checkIn', 'checkOut', 'travelers',
+          'totalPriceInr', 'guestName', 'guestEmail', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'bookingCode', 'userId', 'destinationId', 'destinationName',
+          'packageTitle', 'checkIn', 'checkOut', 'travelers',
+          'totalPriceInr', 'guestName', 'guestEmail', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 32 && data.bookingCode.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId is string && isValidId(data.userId)
+        && data.destinationId is string && isValidId(data.destinationId)
+        && data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 160
+        && data.packageTitle is string && data.packageTitle.size() >= 1 && data.packageTitle.size() <= 200
+        && data.checkIn is string && data.checkIn.size() == 10 && data.checkIn.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.checkOut is string && data.checkOut.size() == 10 && data.checkOut.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.checkOut >= data.checkIn
+        && data.travelers is int && data.travelers >= 1 && data.travelers <= 20
+        && data.totalPriceInr is number && data.totalPriceInr > 0 && data.totalPriceInr <= 5000000
+        && data.guestName is string && data.guestName.size() >= 1 && data.guestName.size() <= 100
+        && data.guestEmail is string && data.guestEmail.size() >= 3 && data.guestEmail.size() <= 200
+        && data.guestEmail.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$')
+        && data.status in ['confirmed', 'cancelled']
+        && data.createdAt is timestamp
+        && (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidSubscriber(data) {
+      return data.keys().hasAll(['userId', 'email', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'email', 'createdAt'])
+        && data.userId is string && data.userId == request.auth.uid && isValidId(data.userId)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDestinationOverride(data) {
+      return data.keys().hasAll([
+          'destinationId', 'verificationStatus', 'officialTourismUrl',
+          'description', 'bestSeason', 'safetyInfo',
+          'stayPerNightInr', 'foodPerDayInr', 'localTransportPerDayInr',
+          'entryFeeInr', 'updatedByUid', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'destinationId', 'verificationStatus', 'officialTourismUrl',
+          'description', 'bestSeason', 'safetyInfo',
+          'stayPerNightInr', 'foodPerDayInr', 'localTransportPerDayInr',
+          'entryFeeInr', 'updatedByUid', 'updatedByEmail', 'updatedAt'
+        ])
+        && data.destinationId is string && isValidId(data.destinationId)
+        && data.verificationStatus in ['Verified', 'Needs Review', 'Unverified']
+        && data.officialTourismUrl is string && data.officialTourismUrl.size() >= 8 && data.officialTourismUrl.size() <= 500
+        && data.officialTourismUrl.matches('^https?://.+$')
+        && data.description is string && data.description.size() >= 10 && data.description.size() <= 2000
+        && data.bestSeason is string && data.bestSeason.size() >= 2 && data.bestSeason.size() <= 120
+        && data.safetyInfo is string && data.safetyInfo.size() >= 4 && data.safetyInfo.size() <= 600
+        && data.stayPerNightInr is number && data.stayPerNightInr >= 0 && data.stayPerNightInr <= 50000
+        && data.foodPerDayInr is number && data.foodPerDayInr >= 0 && data.foodPerDayInr <= 50000
+        && data.localTransportPerDayInr is number && data.localTransportPerDayInr >= 0 && data.localTransportPerDayInr <= 50000
+        && data.entryFeeInr is number && data.entryFeeInr >= 0 && data.entryFeeInr <= 50000
+        && data.updatedByUid is string && data.updatedByUid == request.auth.uid
+        && (!('updatedByEmail' in data) || (data.updatedByEmail is string && data.updatedByEmail.size() <= 200))
+        && data.updatedAt is timestamp;
+    }
+
+    // Connection test document (read-only single doc check)
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Private user profiles (PII isolated to owner & admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId)
+        && isVerifiedUser()
+        && isOwner(userId)
+        && isValidUserProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedUser()
+        && (isOwner(userId) || isAdmin())
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().role == existing().role
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'email', 'updatedAt']);
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // User trip bookings (strictly scoped to booking owner or admin)
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow create: if isValidId(bookingId)
+        && isVerifiedUser()
+        && isValidBooking(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'confirmed'
+        && incoming().createdAt == request.time
+        && !('updatedAt' in incoming());
+      allow update: if isValidId(bookingId)
+        && isVerifiedUser()
+        && isValidBooking(incoming())
+        && incoming().userId == existing().userId
+        && incoming().bookingCode == existing().bookingCode
+        && incoming().destinationId == existing().destinationId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() || (
+            existing().userId == request.auth.uid
+            && existing().status != 'cancelled'
+            && incoming().status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(bookingId) && isAdmin();
+    }
+
+    // Authenticated newsletter subscriptions
+    match /subscribers/{subscriberId} {
+      allow get: if isValidId(subscriberId) && isSignedIn() && (subscriberId == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(subscriberId)
+        && isVerifiedUser()
+        && subscriberId == request.auth.uid
+        && isValidSubscriber(incoming())
+        && incoming().createdAt == request.time;
+      allow update, delete: if isValidId(subscriberId) && isAdmin();
+    }
+
+    // Verified destination overrides (public read, admin write only)
+    match /destinationOverrides/{destinationId} {
+      allow get: if isValidId(destinationId);
+      allow list: if true;
+      allow create: if isValidId(destinationId)
+        && isAdmin()
+        && isValidDestinationOverride(incoming())
+        && incoming().destinationId == destinationId
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(destinationId)
+        && isAdmin()
+        && isValidDestinationOverride(incoming())
+        && incoming().destinationId == existing().destinationId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'verificationStatus', 'officialTourismUrl', 'description',
+          'bestSeason', 'safetyInfo', 'stayPerNightInr', 'foodPerDayInr',
+          'localTransportPerDayInr', 'entryFeeInr', 'updatedByUid',
+          'updatedByEmail', 'updatedAt'
+        ]);
+      allow delete: if isValidId(destinationId) && isAdmin();
+    }
+
+    // Admin membership docs
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow write: if false;
+    }
+  }
+}

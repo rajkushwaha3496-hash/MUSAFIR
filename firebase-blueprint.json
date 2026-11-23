@@ -1,0 +1,268 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered MUSAFIR user profile and role metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "name", "email", "role", "createdAt", "updatedAt"]
+    },
+    "TripBooking": {
+      "title": "TripBooking",
+      "description": "User trip reservation record for an Indian destination or curated package.",
+      "type": "object",
+      "properties": {
+        "bookingCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "destinationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "destinationName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "packageTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "checkIn": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "checkOut": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "travelers": {
+          "type": "number"
+        },
+        "totalPriceInr": {
+          "type": "number"
+        },
+        "guestName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "guestEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "cancelled"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "bookingCode",
+        "userId",
+        "destinationId",
+        "destinationName",
+        "packageTitle",
+        "checkIn",
+        "checkOut",
+        "travelers",
+        "totalPriceInr",
+        "guestName",
+        "guestEmail",
+        "status",
+        "createdAt"
+      ]
+    },
+    "NewsletterSubscriber": {
+      "title": "NewsletterSubscriber",
+      "description": "Authenticated user newsletter subscription preference.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "email", "createdAt"]
+    },
+    "DestinationOverride": {
+      "title": "DestinationOverride",
+      "description": "Admin-verified updates for an Indian destination record.",
+      "type": "object",
+      "properties": {
+        "destinationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "verificationStatus": {
+          "type": "string",
+          "enum": ["Verified", "Needs Review", "Unverified"]
+        },
+        "officialTourismUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 500,
+          "pattern": "^https?://.+$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "bestSeason": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "safetyInfo": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 600
+        },
+        "stayPerNightInr": {
+          "type": "number"
+        },
+        "foodPerDayInr": {
+          "type": "number"
+        },
+        "localTransportPerDayInr": {
+          "type": "number"
+        },
+        "entryFeeInr": {
+          "type": "number"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "destinationId",
+        "verificationStatus",
+        "officialTourismUrl",
+        "description",
+        "bestSeason",
+        "safetyInfo",
+        "stayPerNightInr",
+        "foodPerDayInr",
+        "localTransportPerDayInr",
+        "entryFeeInr",
+        "updatedByUid",
+        "updatedAt"
+      ]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Server-managed administrator role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 200
+        }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profiles isolated per owner UID."
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/TripBooking" },
+      "description": "User trip reservations owned by the booking user."
+    },
+    "/subscribers/{subscriberId}": {
+      "schema": { "$ref": "#/entities/NewsletterSubscriber" },
+      "description": "Authenticated user newsletter subscriptions keyed by userId."
+    },
+    "/destinationOverrides/{destinationId}": {
+      "schema": { "$ref": "#/entities/DestinationOverride" },
+      "description": "Admin-verified overrides for destination verification status, costs, and metadata."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Read-only admin membership documents."
+    }
+  }
+}

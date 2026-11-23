@@ -214,3 +214,19 @@ export interface UserSession {
   name: string;
   email: string;
 }
+
+export interface StudentFinderState {
+  startCity: string;
+  budgetTier: BudgetTier;
+  customMaxBudget: number;
+  days: number;
+  travelers: number;
+  travelMode: TravelMode;
+  season: string;
+  category: IndiaCategory;
+  maxDistanceKm: number | null;
+  weekendTrip: boolean;
+  oneDayTrip: boolean;
+  groupTrip: boolean;
+  sort: SortOption;
+}

@@ -9,7 +9,19 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  updateProfile,
+} from 'firebase/auth';
 import { formatINR } from '../data/travelData.ts';
+import {
+  auth,
+  saveBookingToFirestore,
+  syncUserProfileToFirestore,
+} from '../firebase.ts';
+import { setMemoryAuthToken, submitBookingApi } from '../utils/apiClient.ts';
 import type {
   BookingRecord,
   MusafirDestination,
@@ -240,31 +252,59 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+
+    if (!guestName.trim()) {
+      setErrorMsg('Please enter your full name.');
+      return;
+    }
+    const cleanEmail = guestEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMsg('Please enter a valid email address.');
+      return;
+    }
+    if (checkIn && checkOut && checkOut < checkIn) {
+      setErrorMsg('Check-out date must be on or after check-in date.');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const res = await fetch('/api/bookings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          destinationName: activeDest?.name ?? 'Taj Mahal & Agra',
-          packageTitle: activePkg?.title ?? 'Curated Journey',
-          checkIn,
-          checkOut,
-          travelers,
-          totalPriceInr: totalEstimateInr,
-          guestName,
-          guestEmail,
-        }),
+      const booking = await submitBookingApi({
+        destinationName: activeDest?.name ?? 'Taj Mahal & Agra',
+        packageTitle: activePkg?.title ?? 'Curated Journey',
+        checkIn,
+        checkOut,
+        travelers,
+        totalPriceInr: totalEstimateInr,
+        guestName: guestName.trim(),
+        guestEmail: cleanEmail,
       });
-      const data = (await res.json()) as { booking?: BookingRecord; error?: string };
-      if (!res.ok || !data.booking) {
-        setErrorMsg(data.error ?? 'Could not complete reservation.');
-      } else {
-        setConfirmed(data.booking);
-        onSuccess(data.booking);
+
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        void saveBookingToFirestore({
+          bookingCode: booking.id,
+          destinationId: activeDest?.id ?? 'agra-taj',
+          destinationName: booking.destinationName,
+          packageTitle: booking.packageTitle,
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          travelers: booking.travelers,
+          totalPriceInr: booking.totalPriceInr,
+          guestName: booking.guestName,
+          guestEmail: booking.guestEmail,
+        }).catch(() => {
+          // Non-blocking Firestore sync
+        });
       }
-    } catch {
-      setErrorMsg('Network error. Please try again.');
+
+      setConfirmed(booking);
+      onSuccess(booking);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : 'Network error. Please try again.'
+      );
     } finally {
       setSubmitting(false);
     }
@@ -519,22 +559,114 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMsg('Please enter a valid email address.');
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMsg('Password must be at least 6 characters long.');
+      return;
+    }
+    if (mode === 'signup' && !name.trim()) {
+      setErrorMsg('Please enter your full name.');
+      return;
+    }
+
     setSubmitting(true);
     try {
+      // Primary: Firebase Authentication
+      try {
+        if (mode === 'signup') {
+          const cred = await createUserWithEmailAndPassword(
+            auth,
+            cleanEmail,
+            password
+          );
+          const cleanName = name.trim() || cleanEmail.split('@')[0] || 'Traveler';
+          await updateProfile(cred.user, { displayName: cleanName });
+          void sendEmailVerification(cred.user).catch(() => {});
+          onAuthSuccess({ name: cleanName, email: cleanEmail });
+          onClose();
+          return;
+        } else {
+          const cred = await signInWithEmailAndPassword(
+            auth,
+            cleanEmail,
+            password
+          );
+          const cleanName =
+            cred.user.displayName?.trim() ||
+            cleanEmail.split('@')[0] ||
+            'Traveler';
+          if (cred.user.emailVerified) {
+            void syncUserProfileToFirestore({
+              uid: cred.user.uid,
+              name: cleanName,
+              email: cleanEmail,
+            }).catch(() => {});
+          }
+          onAuthSuccess({ name: cleanName, email: cleanEmail });
+          onClose();
+          return;
+        }
+      } catch (fbErr: unknown) {
+        const fbCode =
+          typeof fbErr === 'object' && fbErr !== null && 'code' in fbErr
+            ? String((fbErr as { code?: string }).code)
+            : '';
+
+        if (fbCode === 'auth/email-already-in-use') {
+          setErrorMsg('An account with this email already exists. Please sign in.');
+          return;
+        }
+        if (
+          fbCode === 'auth/wrong-password' ||
+          fbCode === 'auth/invalid-credential' ||
+          fbCode === 'auth/user-not-found'
+        ) {
+          setErrorMsg('Invalid email or password.');
+          return;
+        }
+        if (fbCode === 'auth/weak-password') {
+          setErrorMsg('Password must be at least 6 characters long.');
+          return;
+        }
+        if (fbCode !== 'auth/operation-not-allowed' && fbCode !== 'auth/network-request-failed') {
+          // Fall through to server /api/auth only when Firebase provider is disabled or unavailable
+          if (fbCode.startsWith('auth/')) {
+            setErrorMsg('Authentication failed. Please check your credentials.');
+            return;
+          }
+        }
+      }
+
+      // Secondary: Server /api/auth with scrypt password verification & signed session
       const res = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, mode }),
+        body: JSON.stringify({ name: name.trim(), email: cleanEmail, password, mode }),
       });
-      const data = (await res.json()) as { user?: UserSession; error?: string };
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setErrorMsg('Authentication service is currently unavailable.');
+        return;
+      }
+      const data = (await res.json()) as {
+        user?: UserSession;
+        token?: string;
+        error?: string;
+      };
       if (!res.ok || !data.user) {
         setErrorMsg(data.error ?? 'Authentication failed.');
       } else {
+        if (data.token) setMemoryAuthToken(data.token);
         onAuthSuccess(data.user);
         onClose();
       }
     } catch {
-      setErrorMsg('Unable to sign in right now.');
+      setErrorMsg('Unable to sign in right now. Please check your connection.');
     } finally {
       setSubmitting(false);
     }

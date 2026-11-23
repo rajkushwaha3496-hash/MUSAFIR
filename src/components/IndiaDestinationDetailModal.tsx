@@ -24,6 +24,10 @@ import {
 } from 'lucide-react';
 import { formatINR } from '../data/travelData.ts';
 import { STARTING_CITIES } from '../data/indianCities.ts';
+import {
+  fetchDestinationDetailApi,
+  updateDestinationAdminApi,
+} from '../utils/apiClient.ts';
 import { calculateStudentBudgetBreakdown } from '../utils/budgetCalculator.ts';
 import type {
   CommonsPhoto,
@@ -70,6 +74,7 @@ export const IndiaDestinationDetailModal: React.FC<
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [dest, setDest] = useState<IndiaDestination | null>(null);
   const [nearby, setNearby] = useState<NearbySummary[]>([]);
   const [photoIdx, setPhotoIdx] = useState(0);
@@ -98,6 +103,7 @@ export const IndiaDestinationDetailModal: React.FC<
   useEffect(() => {
     if (!destinationId) {
       setDest(null);
+      setNearby([]);
       return;
     }
     let cancelled = false;
@@ -108,20 +114,12 @@ export const IndiaDestinationDetailModal: React.FC<
     setAdminOpen(false);
     setAdminMsg(null);
 
-    const params = new URLSearchParams();
-    if (initialStartCity) params.set('startCity', initialStartCity);
-    params.set('days', String(initialDays));
-    params.set('travelers', String(initialTravelers));
-    params.set('travelMode', initialTravelMode);
-
-    fetch(`/api/destinations/${encodeURIComponent(destinationId)}?${params.toString()}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Could not load destination details.');
-        return (await res.json()) as {
-          destination: IndiaDestination;
-          nearbyDestinations: NearbySummary[];
-        };
-      })
+    fetchDestinationDetailApi(destinationId, {
+      startCity: initialStartCity,
+      days: initialDays,
+      travelers: initialTravelers,
+      travelMode: initialTravelMode,
+    })
       .then((data) => {
         if (cancelled) return;
         const d = data.destination;
@@ -143,6 +141,8 @@ export const IndiaDestinationDetailModal: React.FC<
       })
       .catch((err) => {
         if (!cancelled) {
+          setDest(null);
+          setNearby([]);
           setError(err instanceof Error ? err.message : 'Failed to load');
         }
       })
@@ -153,7 +153,14 @@ export const IndiaDestinationDetailModal: React.FC<
     return () => {
       cancelled = true;
     };
-  }, [destinationId, initialStartCity, initialDays, initialTravelers, initialTravelMode]);
+  }, [
+    destinationId,
+    initialStartCity,
+    initialDays,
+    initialTravelers,
+    initialTravelMode,
+    retryNonce,
+  ]);
 
   useEffect(() => {
     if (!destinationId) return;
@@ -191,25 +198,19 @@ export const IndiaDestinationDetailModal: React.FC<
     setSavingAdmin(true);
     setAdminMsg(null);
     try {
-      const res = await fetch(`/api/destinations/${encodeURIComponent(dest.id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          verificationStatus: editStatus,
-          officialTourismUrl: editOfficialUrl,
-          description: editDescription,
-          bestSeason: editBestSeason,
-          stayPerNightInr: editStay,
-          foodPerDayInr: editFood,
-          localTransportPerDayInr: editLocal,
-          entryFeeInr: editEntry,
-          safetyInfo: editSafety,
-        }),
+      const updated = await updateDestinationAdminApi(dest.id, {
+        verificationStatus: editStatus,
+        officialTourismUrl: editOfficialUrl,
+        description: editDescription,
+        bestSeason: editBestSeason,
+        stayPerNightInr: editStay,
+        foodPerDayInr: editFood,
+        localTransportPerDayInr: editLocal,
+        entryFeeInr: editEntry,
+        safetyInfo: editSafety,
       });
-      if (!res.ok) throw new Error('Failed to save updates.');
-      const data = (await res.json()) as { destination: IndiaDestination };
       const merged = {
-        ...data.destination,
+        ...updated,
         distanceKm: dest.distanceKm,
       };
       setDest(merged);
@@ -239,17 +240,26 @@ export const IndiaDestinationDetailModal: React.FC<
               </p>
             </div>
           ) : error || !dest ? (
-            <div className="p-12 text-center">
-              <p className="font-editorial text-2xl text-[#141714] mb-2">
+            <div className="p-12 text-center space-y-4">
+              <p className="font-editorial text-2xl text-[#141714]">
                 {error || 'Destination unavailable'}
               </p>
-              <button
-                type="button"
-                onClick={onClose}
-                className="bg-[#141714] text-white text-sm font-semibold px-5 py-2.5 rounded-full cursor-pointer"
-              >
-                Close
-              </button>
+              <div className="flex items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRetryNonce((n) => n + 1)}
+                  className="bg-[#1d4738] text-white text-sm font-semibold px-5 py-2.5 rounded-full cursor-pointer"
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="bg-[#141714] text-white text-sm font-semibold px-5 py-2.5 rounded-full cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -404,6 +414,12 @@ export const IndiaDestinationDetailModal: React.FC<
                             src={photo.thumbUrl || photo.imageUrl}
                             alt={photo.title}
                             referrerPolicy="no-referrer"
+                            onError={() =>
+                              setBrokenUrls((prev) => ({
+                                ...prev,
+                                [photo.imageUrl]: true,
+                              }))
+                            }
                             className="w-full h-full object-cover"
                           />
                         </button>
@@ -1059,6 +1075,13 @@ export const IndiaDestinationDetailModal: React.FC<
               src={currentPhoto.imageUrl}
               alt={currentPhoto.title}
               referrerPolicy="no-referrer"
+              onError={() => {
+                setBrokenUrls((prev) => ({
+                  ...prev,
+                  [currentPhoto.imageUrl]: true,
+                }));
+                setPhotoIdx(0);
+              }}
               className="max-h-full max-w-full object-contain rounded-xl"
             />
 

@@ -12,7 +12,6 @@ interface NavbarProps {
 
 const NAV_LINKS = [
   { id: 'home', label: 'Home' },
-  { id: 'student-finder', label: 'Student Finder' },
   { id: 'destinations', label: '500+ Places' },
   { id: 'packages', label: 'Packages' },
   { id: 'about', label: 'About Us' },

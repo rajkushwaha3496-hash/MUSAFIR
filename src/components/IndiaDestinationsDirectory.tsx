@@ -22,9 +22,9 @@ import type {
   IndiaCategory,
   IndiaDestination,
   IndiaRegion,
+  StudentFinderState,
   VerificationStatus,
 } from '../types.ts';
-import type { StudentFinderState } from './StudentTripFinderSection.tsx';
 
 interface SuggestItem {
   id: string;
@@ -313,20 +313,22 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
       setSuggestions([]);
       return;
     }
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
-        const res = await fetch(
-          `/api/destinations/suggest?q=${encodeURIComponent(trimmed)}`
+        const { fetchDestinationSuggestionsApi } = await import(
+          '../utils/apiClient.ts'
         );
-        if (res.ok) {
-          const data = (await res.json()) as { suggestions?: SuggestItem[] };
-          setSuggestions(data.suggestions ?? []);
-        }
+        const list = await fetchDestinationSuggestionsApi(trimmed);
+        if (!cancelled) setSuggestions(list);
       } catch {
         // ignore autocomplete network hiccups
       }
     }, 180);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [searchQuery]);
 
   return (
@@ -411,7 +413,8 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
                   <button
                     key={s.id}
                     type="button"
-                    onMouseDown={() => {
+                    onPointerDown={(e) => {
+                      e.preventDefault();
                       setShowSuggest(false);
                       onExploreDestination(s.id);
                     }}

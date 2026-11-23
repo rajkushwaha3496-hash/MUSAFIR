@@ -25,6 +25,12 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          const srcDb = path.resolve(__dirname, 'data/destinations-db.json');
+          const distDataDir = path.resolve(distDir, 'data');
+          if (fs.existsSync(distDir) && fs.existsSync(srcDb)) {
+            fs.mkdirSync(distDataDir, {recursive: true});
+            fs.copyFileSync(srcDb, path.resolve(distDataDir, 'destinations-db.json'));
+          }
         },
       },
     ],

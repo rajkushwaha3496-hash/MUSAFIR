@@ -1,15 +1,22 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { haversineDistanceKm, STARTING_CITIES } from './src/data/indianCities.ts';
-import { calculateStudentBudgetBreakdown } from './src/utils/budgetCalculator.ts';
+import {
+  buildFullStatsPayload,
+  computeDbStats,
+  getDestinationDetail,
+  queryDestinationsList,
+  suggestDestinations,
+} from './src/utils/destinationEngine.ts';
 import type {
   BookingRecord,
   DestinationsReportStats,
   IndiaDestination,
   TravelMode,
+  UserSession,
   VerificationStatus,
 } from './src/types.ts';
 
@@ -19,17 +26,241 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_PATH = path.join(DATA_DIR, 'wanderly-store.json');
 const DESTINATIONS_DB_PATH = path.join(DATA_DIR, 'destinations-db.json');
+const FIREBASE_CONFIG_PATH = path.join(__dirname, 'firebase-applet-config.json');
+
+function getFirebaseProjectId(): string {
+  if (process.env.FIREBASE_PROJECT_ID) return process.env.FIREBASE_PROJECT_ID;
+  try {
+    if (fs.existsSync(FIREBASE_CONFIG_PATH)) {
+      const cfg = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf-8')) as {
+        projectId?: string;
+      };
+      if (cfg.projectId) return cfg.projectId;
+    }
+  } catch {
+    // fallback below
+  }
+  return 'quick-botany-h3kqt';
+}
+
+interface StoredUser {
+  name: string;
+  email: string;
+  passwordHash?: string;
+}
 
 interface WanderlyStore {
   bookings: BookingRecord[];
   subscribers: string[];
-  users: Array<{ name: string; email: string }>;
+  users: StoredUser[];
 }
 
 interface DestinationsDbFile {
   generatedAt: string;
   stats: DestinationsReportStats;
   destinations: IndiaDestination[];
+}
+
+const SESSION_SECRET =
+  process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const COOKIE_NAME = 'musafir_session';
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  const parts = stored.split(':');
+  if (parts.length !== 2) return false;
+  const [salt, keyHex] = parts;
+  const keyBuf = Buffer.from(keyHex, 'hex');
+  const derived = crypto.scryptSync(password, salt, 64);
+  if (keyBuf.length !== derived.length) return false;
+  return crypto.timingSafeEqual(keyBuf, derived);
+}
+
+function signSessionToken(user: UserSession): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      name: user.name,
+      email: user.email,
+      exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    })
+  ).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(payload)
+    .digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySessionToken(token: string): UserSession | null {
+  try {
+    const [payload, sig] = token.split('.');
+    if (!payload || !sig) return null;
+    const expected = crypto
+      .createHmac('sha256', SESSION_SECRET)
+      .update(payload)
+      .digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return null;
+    if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+    const decoded = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf-8')
+    ) as { name?: string; email?: string; exp?: number };
+    if (!decoded.exp || decoded.exp < Date.now()) return null;
+    if (!decoded.email || !decoded.name) return null;
+    return { name: decoded.name, email: decoded.email };
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) return {};
+  const result: Record<string, string> = {};
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const val = decodeURIComponent(part.slice(idx + 1).trim());
+    result[key] = val;
+  }
+  return result;
+}
+
+let cachedCerts: Record<string, string> = {};
+let certsExpiresAt = 0;
+
+async function getFirebasePublicCerts(): Promise<Record<string, string>> {
+  if (Date.now() < certsExpiresAt && Object.keys(cachedCerts).length > 0) {
+    return cachedCerts;
+  }
+  try {
+    const res = await fetch(
+      'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+    );
+    if (!res.ok) return cachedCerts;
+    const certs = (await res.json()) as Record<string, string>;
+    const cc = res.headers.get('cache-control') || '';
+    const match = cc.match(/max-age=(\d+)/i);
+    const maxAgeSec = match ? Number(match[1]) : 3600;
+    cachedCerts = certs;
+    certsExpiresAt = Date.now() + Math.max(60, maxAgeSec) * 1000;
+    return cachedCerts;
+  } catch {
+    return cachedCerts;
+  }
+}
+
+async function verifyFirebaseIdToken(token: string): Promise<UserSession | null> {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const header = JSON.parse(
+      Buffer.from(parts[0], 'base64url').toString('utf-8')
+    ) as { alg?: string; kid?: string };
+    if (header.alg !== 'RS256' || !header.kid) return null;
+
+    const certs = await getFirebasePublicCerts();
+    const cert = certs[header.kid];
+    if (!cert) return null;
+
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(`${parts[0]}.${parts[1]}`);
+    verifier.end();
+    if (!verifier.verify(cert, parts[2], 'base64url')) return null;
+
+    const payload = JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf-8')
+    ) as {
+      email?: string;
+      name?: string;
+      exp?: number;
+      iat?: number;
+      aud?: string;
+      iss?: string;
+      sub?: string;
+    };
+    const projectId = getFirebaseProjectId();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (
+      !payload.sub ||
+      !payload.email ||
+      payload.aud !== projectId ||
+      payload.iss !== `https://securetoken.google.com/${projectId}` ||
+      !payload.exp ||
+      payload.exp <= nowSec ||
+      !payload.iat ||
+      payload.iat > nowSec + 300
+    ) {
+      return null;
+    }
+    return {
+      name: payload.name || payload.email.split('@')[0] || 'Member',
+      email: payload.email,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getAuthenticatedSession(
+  req: express.Request
+): Promise<UserSession | null> {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    const verifiedLocal = verifySessionToken(token);
+    if (verifiedLocal) return verifiedLocal;
+    const firebaseIdentity = await verifyFirebaseIdToken(token);
+    if (firebaseIdentity) return firebaseIdentity;
+  }
+  const cookies = parseCookies(req.headers.cookie);
+  if (cookies[COOKIE_NAME]) {
+    return verifySessionToken(cookies[COOKIE_NAME]);
+  }
+  return null;
+}
+
+function setSessionCookie(
+  req: express.Request,
+  res: express.Response,
+  token: string
+) {
+  const isHttps =
+    req.secure ||
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.NODE_ENV === 'production';
+  const attrs = [
+    `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    `Max-Age=${7 * 24 * 60 * 60}`,
+  ];
+  if (isHttps) {
+    attrs.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    attrs.push('SameSite=Lax');
+  }
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function clearSessionCookie(req: express.Request, res: express.Response) {
+  const isHttps =
+    req.secure ||
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.NODE_ENV === 'production';
+  const attrs = [`${COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'Max-Age=0'];
+  if (isHttps) {
+    attrs.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    attrs.push('SameSite=Lax');
+  }
+  res.setHeader('Set-Cookie', attrs.join('; '));
 }
 
 function readStore(): WanderlyStore {
@@ -62,61 +293,11 @@ function writeStore(store: WanderlyStore): void {
 let cachedDb: DestinationsDbFile | null = null;
 let cachedMtimeMs = 0;
 
-function computeDbStats(destinations: IndiaDestination[]): DestinationsReportStats {
-  let totalPhotographs = 0;
-  let completeGalleries = 0;
-  let partialGalleries = 0;
-  let missingPhotos = 0;
-  let completeDescriptions = 0;
-  let verifiedCount = 0;
-  let needsReviewCount = 0;
-  let unverifiedCount = 0;
-  const statesSet = new Set<string>();
-
-  for (const d of destinations) {
-    statesSet.add(d.state);
-    const count = d.gallery?.length || 0;
-    totalPhotographs += count;
-    if (count >= 3) completeGalleries++;
-    else if (count >= 1) partialGalleries++;
-    else missingPhotos++;
-
-    if (d.description && d.description.length > 60) completeDescriptions++;
-    if (d.verificationStatus === 'Verified') verifiedCount++;
-    else if (d.verificationStatus === 'Needs Review') needsReviewCount++;
-    else unverifiedCount++;
-  }
-
-  return {
-    totalDestinations: destinations.length,
-    statesAndUTsCovered: statesSet.size,
-    totalPhotographs,
-    completeGalleries,
-    partialGalleries,
-    missingPhotos,
-    completeDescriptions,
-    verifiedCount,
-    needsReviewCount,
-    unverifiedCount,
-  };
-}
-
 function readDestinationsDb(): DestinationsDbFile {
   if (!fs.existsSync(DESTINATIONS_DB_PATH)) {
     return {
       generatedAt: new Date().toISOString(),
-      stats: {
-        totalDestinations: 0,
-        statesAndUTsCovered: 0,
-        totalPhotographs: 0,
-        completeGalleries: 0,
-        partialGalleries: 0,
-        missingPhotos: 0,
-        completeDescriptions: 0,
-        verifiedCount: 0,
-        needsReviewCount: 0,
-        unverifiedCount: 0,
-      },
+      stats: computeDbStats([]),
       destinations: [],
     };
   }
@@ -149,98 +330,20 @@ function writeDestinationsDb(destinations: IndiaDestination[]): DestinationsDbFi
     stats: computeDbStats(destinations),
     destinations,
   };
-  fs.writeFileSync(DESTINATIONS_DB_PATH, JSON.stringify(updated, null, 2), 'utf-8');
+  fs.writeFileSync(
+    DESTINATIONS_DB_PATH,
+    JSON.stringify(updated, null, 2),
+    'utf-8'
+  );
   const stat = fs.statSync(DESTINATIONS_DB_PATH);
   cachedDb = updated;
   cachedMtimeMs = stat.mtimeMs;
   return updated;
 }
 
-const MONTH_INDEX: Record<string, number> = {
-  january: 0, jan: 0,
-  february: 1, feb: 1,
-  march: 2, mar: 2,
-  april: 3, apr: 3,
-  may: 4,
-  june: 5, jun: 5,
-  july: 6, jul: 6,
-  august: 7, aug: 7,
-  september: 8, sep: 8, sept: 8,
-  october: 9, oct: 9,
-  november: 10, nov: 10,
-  december: 11, dec: 11,
-};
-
-function matchesSeasonMonth(bestSeason: string, monthOrSeason: string): boolean {
-  const query = monthOrSeason.trim().toLowerCase();
-  if (!query || query === 'all') return true;
-
-  // Allow seasonal keywords
-  if (query === 'winter') {
-    return ['november', 'december', 'january', 'february'].some((m) =>
-      matchesSeasonMonth(bestSeason, m)
-    );
-  }
-  if (query === 'summer') {
-    return ['march', 'april', 'may', 'june'].some((m) =>
-      matchesSeasonMonth(bestSeason, m)
-    );
-  }
-  if (query === 'monsoon') {
-    return ['july', 'august', 'september'].some((m) =>
-      matchesSeasonMonth(bestSeason, m)
-    );
-  }
-
-  const targetIdx = MONTH_INDEX[query];
-  if (targetIdx === undefined) {
-    return bestSeason.toLowerCase().includes(query);
-  }
-
-  const segments = bestSeason.toLowerCase().split(/[,;]/);
-  for (const seg of segments) {
-    const tokens = seg.match(/[a-z]+/g) || [];
-    const months = tokens
-      .map((t) => MONTH_INDEX[t])
-      .filter((v): v is number => v !== undefined);
-    if (months.length === 1 && months[0] === targetIdx) return true;
-    if (months.length >= 2) {
-      const start = months[0];
-      const end = months[months.length - 1];
-      if (start <= end) {
-        if (targetIdx >= start && targetIdx <= end) return true;
-      } else {
-        if (targetIdx >= start || targetIdx <= end) return true;
-      }
-    }
-  }
-  return false;
-}
-
-function parseBudgetTierRange(
-  tier: string,
-  customMax: number | null
-): { min: number; max: number | null } {
-  switch (tier) {
-    case 'under-500':
-      return { min: 0, max: 500 };
-    case '500-1000':
-      return { min: 500, max: 1000 };
-    case '1000-2000':
-      return { min: 1000, max: 2000 };
-    case '2000-3500':
-      return { min: 2000, max: 3500 };
-    case '3500-5000':
-      return { min: 3500, max: 5000 };
-    case 'custom':
-      return { min: 0, max: customMax && customMax > 0 ? customMax : null };
-    default:
-      return { min: 0, max: customMax && customMax > 0 ? customMax : null };
-  }
-}
-
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
@@ -250,260 +353,72 @@ async function startServer() {
 
   app.get('/api/destinations/stats', (_req, res) => {
     const db = readDestinationsDb();
-    const byState: Record<string, number> = {};
-    const byCategory: Record<string, number> = {};
-    const byRegion: Record<string, number> = {};
-
-    for (const d of db.destinations) {
-      byState[d.state] = (byState[d.state] || 0) + 1;
-      byCategory[d.category] = (byCategory[d.category] || 0) + 1;
-      byRegion[d.region] = (byRegion[d.region] || 0) + 1;
-    }
-
-    res.json({
-      generatedAt: db.generatedAt,
-      ...db.stats,
-      byState,
-      byCategory,
-      byRegion,
-    });
+    res.json(buildFullStatsPayload(db.destinations, db.generatedAt));
   });
 
   app.get('/api/destinations/suggest', (req, res) => {
-    const q = String(req.query.q || '').trim().toLowerCase();
+    const q = String(req.query.q || '');
     const db = readDestinationsDb();
-    if (!q) {
-      res.json({ suggestions: db.destinations.slice(0, 8).map((d) => ({ id: d.id, name: d.name, state: d.state, category: d.category })) });
-      return;
-    }
-    const matches = db.destinations
-      .filter(
-        (d) =>
-          d.name.toLowerCase().includes(q) ||
-          d.state.toLowerCase().includes(q) ||
-          d.district.toLowerCase().includes(q) ||
-          d.category.toLowerCase().includes(q)
-      )
-      .slice(0, 8)
-      .map((d) => ({
-        id: d.id,
-        name: d.name,
-        state: d.state,
-        district: d.district,
-        category: d.category,
-      }));
-    res.json({ suggestions: matches });
+    res.json({ suggestions: suggestDestinations(db.destinations, q) });
   });
 
   app.get('/api/destinations', (req, res) => {
     const db = readDestinationsDb();
-    const q = String(req.query.q || '').trim().toLowerCase();
-    const state = String(req.query.state || 'All');
-    const region = String(req.query.region || 'All');
-    const category = String(req.query.category || 'All');
-    const budgetTier = String(req.query.budgetTier || 'all');
-    const customMaxBudget = req.query.maxBudget ? Number(req.query.maxBudget) : null;
-    const days = Math.max(1, Math.min(15, Number(req.query.days) || 2));
-    const travelers = Math.max(1, Math.min(20, Number(req.query.travelers) || 1));
-    const travelMode = (String(req.query.travelMode || 'Train') as TravelMode) || 'Train';
-    const season = String(req.query.season || 'All');
-    const startCityId = String(req.query.startCity || '');
-    const maxDistanceKm = req.query.maxDistanceKm ? Number(req.query.maxDistanceKm) : null;
-    const verificationStatus = String(req.query.verificationStatus || 'All');
-    const studentFriendly = req.query.studentFriendly === 'true';
-    const weekendTrip = req.query.weekendTrip === 'true';
-    const oneDayTrip = req.query.oneDayTrip === 'true';
-    const groupTrip = req.query.groupTrip === 'true';
-    const maxDurationDays = req.query.maxDurationDays ? Number(req.query.maxDurationDays) : null;
-    const sort = String(req.query.sort || 'best-match');
-    const page = Math.max(1, Number(req.query.page) || 1);
-    const limit = Math.max(1, Math.min(48, Number(req.query.limit) || 18));
-
-    const startCity = STARTING_CITIES.find(
-      (c) => c.id === startCityId || c.name.toLowerCase() === startCityId.toLowerCase()
-    );
-
-    const { min: budgetMin, max: budgetMax } = parseBudgetTierRange(
-      budgetTier,
-      customMaxBudget
-    );
-
-    const enriched = db.destinations.map((dest) => {
-      const distanceKm = startCity
-        ? haversineDistanceKm(startCity.lat, startCity.lon, dest.lat, dest.lon)
-        : null;
-      const estimatedBreakdown = calculateStudentBudgetBreakdown({
-        budget: dest.budget,
-        days,
-        travelers,
-        distanceKm,
-        travelMode,
-      });
-      return {
-        ...dest,
-        distanceKm,
-        estimatedBreakdown,
-      };
+    const result = queryDestinationsList(db.destinations, {
+      q: String(req.query.q || ''),
+      state: String(req.query.state || 'All'),
+      region: String(req.query.region || 'All'),
+      category: String(req.query.category || 'All'),
+      budgetTier: String(req.query.budgetTier || 'all'),
+      maxBudget: req.query.maxBudget ? Number(req.query.maxBudget) : null,
+      days: Number(req.query.days) || 2,
+      travelers: Number(req.query.travelers) || 1,
+      travelMode: (String(req.query.travelMode || 'Train') as TravelMode) || 'Train',
+      season: String(req.query.season || 'All'),
+      startCity: String(req.query.startCity || ''),
+      maxDistanceKm: req.query.maxDistanceKm
+        ? Number(req.query.maxDistanceKm)
+        : null,
+      verificationStatus: String(req.query.verificationStatus || 'All'),
+      studentFriendly: req.query.studentFriendly === 'true',
+      weekendTrip: req.query.weekendTrip === 'true',
+      oneDayTrip: req.query.oneDayTrip === 'true',
+      groupTrip: req.query.groupTrip === 'true',
+      maxDurationDays: req.query.maxDurationDays
+        ? Number(req.query.maxDurationDays)
+        : null,
+      sort: String(req.query.sort || 'best-match'),
+      page: Number(req.query.page) || 1,
+      limit: Number(req.query.limit) || 18,
     });
-
-    const filtered = enriched.filter((dest) => {
-      if (state !== 'All' && dest.state !== state) return false;
-      if (region !== 'All' && dest.region !== region) return false;
-      if (category !== 'All' && dest.category !== category) return false;
-      if (
-        verificationStatus !== 'All' &&
-        dest.verificationStatus !== verificationStatus
-      ) {
-        return false;
-      }
-      if (studentFriendly && !dest.studentFriendly) return false;
-      if (weekendTrip && (!dest.weekendTrip && (dest.distanceKm === null || dest.distanceKm > 380))) {
-        return false;
-      }
-      if (oneDayTrip && !dest.oneDayTrip && (dest.distanceKm === null || dest.distanceKm > 130)) {
-        return false;
-      }
-      if (groupTrip && !dest.groupTrip) return false;
-      if (maxDurationDays && dest.recommendedDays > maxDurationDays) return false;
-
-      if (season !== 'All' && !matchesSeasonMonth(dest.bestSeason, season)) {
-        return false;
-      }
-
-      if (maxDistanceKm && dest.distanceKm !== null && dest.distanceKm > maxDistanceKm) {
-        return false;
-      }
-
-      // Strict budget affordability rule:
-      // Never recommend a destination as affordable if estimated per-person total exceeds selected max budget.
-      const perPerson = dest.estimatedBreakdown.perPersonTotalInr;
-      if (budgetMax !== null && perPerson > budgetMax) return false;
-      if (budgetTier !== 'all' && budgetTier !== 'custom' && budgetTier !== 'under-500' && perPerson < budgetMin) {
-        // Keep items that are even cheaper ONLY when user didn't want strictly inside range?
-        // Actually for range filters like ₹1,000-₹2,000, allow <= max and >= min * 0.6 or strict min:
-        if (perPerson < budgetMin) return false;
-      }
-
-      if (q) {
-        const haystack = [
-          dest.name,
-          dest.state,
-          dest.district,
-          dest.region,
-          dest.category,
-          dest.description,
-          ...dest.tags,
-          ...dest.nearbyAttractions,
-        ]
-          .join(' ')
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-
-      return true;
-    });
-
-    filtered.sort((a, b) => {
-      if (sort === 'cheapest') {
-        return (
-          a.estimatedBreakdown.perPersonTotalInr -
-          b.estimatedBreakdown.perPersonTotalInr
-        );
-      }
-      if (sort === 'shortest-distance') {
-        if (a.distanceKm !== null && b.distanceKm !== null) {
-          return a.distanceKm - b.distanceKm;
-        }
-        return b.popularityScore - a.popularityScore;
-      }
-      if (sort === 'most-popular') {
-        return b.popularityScore - a.popularityScore;
-      }
-      // best-match: prioritize Verified + has photos + popularity + distance proximity
-      const score = (d: typeof a) => {
-        let s = d.popularityScore;
-        if (d.verificationStatus === 'Verified') s += 40;
-        if ((d.gallery?.length || 0) >= 3) s += 30;
-        if (d.distanceKm !== null) {
-          s += Math.max(0, 50 - d.distanceKm / 25);
-        }
-        return s;
-      };
-      return score(b) - score(a);
-    });
-
-    const total = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    const safePage = Math.min(page, totalPages);
-    const startIdx = (safePage - 1) * limit;
-    const items = filtered.slice(startIdx, startIdx + limit);
-
-    res.json({
-      total,
-      page: safePage,
-      totalPages,
-      limit,
-      items,
-      stats: db.stats,
-    });
+    res.json(result);
   });
 
   app.get('/api/destinations/:idOrSlug', (req, res) => {
     const db = readDestinationsDb();
-    const param = req.params.idOrSlug;
-    const dest = db.destinations.find(
-      (d) => d.id === param || d.slug === param
-    );
-    if (!dest) {
+    const detail = getDestinationDetail(db.destinations, req.params.idOrSlug, {
+      days: req.query.days ? Number(req.query.days) : undefined,
+      travelers: req.query.travelers ? Number(req.query.travelers) : undefined,
+      travelMode:
+        (String(req.query.travelMode || 'Train') as TravelMode) || 'Train',
+      startCity: String(req.query.startCity || ''),
+    });
+    if (!detail) {
       res.status(404).json({ error: 'Destination not found.' });
       return;
     }
-
-    const days = Math.max(1, Math.min(15, Number(req.query.days) || dest.recommendedDays || 2));
-    const travelers = Math.max(1, Math.min(20, Number(req.query.travelers) || 1));
-    const travelMode = (String(req.query.travelMode || 'Train') as TravelMode) || 'Train';
-    const startCityId = String(req.query.startCity || '');
-    const startCity = STARTING_CITIES.find((c) => c.id === startCityId);
-
-    const distanceKm = startCity
-      ? haversineDistanceKm(startCity.lat, startCity.lon, dest.lat, dest.lon)
-      : null;
-
-    const estimatedBreakdown = calculateStudentBudgetBreakdown({
-      budget: dest.budget,
-      days,
-      travelers,
-      distanceKm,
-      travelMode,
-    });
-
-    // Real geographic nearby destinations via Haversine distance
-    const nearbyDestinations = db.destinations
-      .filter((other) => other.id !== dest.id)
-      .map((other) => ({
-        id: other.id,
-        slug: other.slug,
-        name: other.name,
-        state: other.state,
-        category: other.category,
-        coverPhoto: other.coverPhoto,
-        verificationStatus: other.verificationStatus,
-        distanceKm: haversineDistanceKm(dest.lat, dest.lon, other.lat, other.lon),
-      }))
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, 6);
-
-    res.json({
-      destination: {
-        ...dest,
-        distanceKm,
-        estimatedBreakdown,
-      },
-      nearbyDestinations,
-    });
+    res.json(detail);
   });
 
-  app.patch('/api/destinations/:id', (req, res) => {
+  app.patch('/api/destinations/:id', async (req, res) => {
+    const session = await getAuthenticatedSession(req);
+    if (!session) {
+      res
+        .status(401)
+        .json({ error: 'Please sign in before modifying verification details.' });
+      return;
+    }
+
     const db = readDestinationsDb();
     const idx = db.destinations.findIndex((d) => d.id === req.params.id);
     if (idx === -1) {
@@ -533,27 +448,46 @@ async function startServer() {
       'Unverified',
     ];
     const nextStatus =
-      body.verificationStatus && allowedStatuses.includes(body.verificationStatus)
+      body.verificationStatus &&
+      allowedStatuses.includes(body.verificationStatus)
         ? body.verificationStatus
         : current.verificationStatus;
 
-    const nextStay =
-      body.stayPerNightInr !== undefined && Number(body.stayPerNightInr) >= 0
-        ? Number(body.stayPerNightInr)
-        : current.budget.stayPerNightInr;
-    const nextFood =
-      body.foodPerDayInr !== undefined && Number(body.foodPerDayInr) >= 0
-        ? Number(body.foodPerDayInr)
-        : current.budget.foodPerDayInr;
-    const nextLocal =
-      body.localTransportPerDayInr !== undefined &&
-      Number(body.localTransportPerDayInr) >= 0
-        ? Number(body.localTransportPerDayInr)
-        : current.budget.localTransportPerDayInr;
-    const nextEntry =
-      body.entryFeeInr !== undefined && Number(body.entryFeeInr) >= 0
-        ? Number(body.entryFeeInr)
-        : current.budget.entryFeeInr;
+    let nextOfficialUrl = current.officialTourismUrl;
+    if (body.officialTourismUrl?.trim()) {
+      const trimmedUrl = body.officialTourismUrl.trim();
+      let isValidHttpUrl = false;
+      try {
+        const parsed = new URL(trimmedUrl);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          nextOfficialUrl = trimmedUrl;
+          isValidHttpUrl = true;
+        }
+      } catch {
+        isValidHttpUrl = false;
+      }
+      if (!isValidHttpUrl) {
+        res
+          .status(400)
+          .json({ error: 'Official tourism URL must start with http:// or https://.' });
+        return;
+      }
+    }
+
+    const clampCost = (val: unknown, fallback: number) => {
+      if (val === undefined) return fallback;
+      const n = Number(val);
+      if (!Number.isFinite(n) || n < 0 || n > 50000) return fallback;
+      return Math.round(n);
+    };
+
+    const nextStay = clampCost(body.stayPerNightInr, current.budget.stayPerNightInr);
+    const nextFood = clampCost(body.foodPerDayInr, current.budget.foodPerDayInr);
+    const nextLocal = clampCost(
+      body.localTransportPerDayInr,
+      current.budget.localTransportPerDayInr
+    );
+    const nextEntry = clampCost(body.entryFeeInr, current.budget.entryFeeInr);
 
     const updatedDest: IndiaDestination = {
       ...current,
@@ -562,8 +496,7 @@ async function startServer() {
         nextStatus === 'Unverified'
           ? null
           : new Date().toISOString().slice(0, 10),
-      officialTourismUrl:
-        body.officialTourismUrl?.trim() || current.officialTourismUrl,
+      officialTourismUrl: nextOfficialUrl,
       description: body.description?.trim() || current.description,
       whyFamous: body.whyFamous?.trim() || current.whyFamous,
       bestSeason: body.bestSeason?.trim() || current.bestSeason,
@@ -601,24 +534,43 @@ async function startServer() {
       guestEmail,
     } = req.body as Omit<BookingRecord, 'id' | 'createdAt'>;
 
-    if (!guestName?.trim() || !guestEmail?.trim() || !destinationName) {
-      res
-        .status(400)
-        .json({ error: 'Please complete your name, email, and destination.' });
+    const cleanEmail = guestEmail?.trim().toLowerCase() ?? '';
+    if (
+      !guestName?.trim() ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) ||
+      !destinationName?.trim()
+    ) {
+      res.status(400).json({
+        error: 'Please complete your name, a valid email address, and destination.',
+      });
+      return;
+    }
+
+    if (checkIn && checkOut && checkOut < checkIn) {
+      res.status(400).json({
+        error: 'Check-out date must be on or after check-in date.',
+      });
+      return;
+    }
+
+    const safeTravelers = Math.max(1, Math.min(20, Math.round(Number(travelers) || 2)));
+    const safePrice = Number(totalPriceInr);
+    if (!Number.isFinite(safePrice) || safePrice <= 0) {
+      res.status(400).json({ error: 'Invalid trip price estimate.' });
       return;
     }
 
     const store = readStore();
     const record: BookingRecord = {
       id: `MSF-${Math.floor(100000 + Math.random() * 900000)}`,
-      destinationName,
+      destinationName: destinationName.trim(),
       packageTitle: packageTitle || `${destinationName} Curated Escape`,
-      checkIn,
-      checkOut,
-      travelers: Number(travelers) || 2,
-      totalPriceInr: Number(totalPriceInr) || 6999,
+      checkIn: checkIn || '',
+      checkOut: checkOut || '',
+      travelers: safeTravelers,
+      totalPriceInr: Math.round(safePrice),
       guestName: guestName.trim(),
-      guestEmail: guestEmail.trim(),
+      guestEmail: cleanEmail,
       createdAt: new Date().toISOString(),
     };
 
@@ -643,10 +595,21 @@ async function startServer() {
     res.status(201).json({ subscribed: true, email: cleanEmail });
   });
 
+  app.get('/api/auth/me', async (req, res) => {
+    const session = await getAuthenticatedSession(req);
+    res.json({ user: session });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    clearSessionCookie(req, res);
+    res.json({ ok: true });
+  });
+
   app.post('/api/auth', (req, res) => {
-    const { name, email, mode } = req.body as {
+    const { name, email, password, mode } = req.body as {
       name?: string;
       email?: string;
+      password?: string;
       mode?: 'login' | 'signup';
     };
     const cleanEmail = email?.trim().toLowerCase() ?? '';
@@ -654,25 +617,66 @@ async function startServer() {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
-
-    const store = readStore();
-    const existing = store.users.find((u) => u.email === cleanEmail);
-    const resolvedName =
-      name?.trim() || existing?.name || cleanEmail.split('@')[0] || 'Traveler';
-
-    if (mode === 'signup' || !existing) {
-      if (!existing) {
-        store.users.push({ name: resolvedName, email: cleanEmail });
-        writeStore(store);
-      }
+    if (!password || password.length < 6) {
+      res
+        .status(400)
+        .json({ error: 'Password must be at least 6 characters long.' });
+      return;
     }
 
-    res.json({
-      user: {
+    const store = readStore();
+    const existingIdx = store.users.findIndex((u) => u.email === cleanEmail);
+    const existing = existingIdx >= 0 ? store.users[existingIdx] : null;
+
+    if (mode === 'signup') {
+      if (existing) {
+        res.status(409).json({
+          error: 'An account with this email already exists. Please sign in.',
+        });
+        return;
+      }
+      const resolvedName =
+        name?.trim() || cleanEmail.split('@')[0] || 'Traveler';
+      store.users.push({
         name: resolvedName,
         email: cleanEmail,
-      },
-    });
+        passwordHash: hashPassword(password),
+      });
+      writeStore(store);
+
+      const user: UserSession = { name: resolvedName, email: cleanEmail };
+      const token = signSessionToken(user);
+      setSessionCookie(req, res, token);
+      res.status(201).json({ user, token });
+      return;
+    }
+
+    // Login mode
+    if (!existing) {
+      res.status(401).json({
+        error: 'No account found with this email. Please create an account first.',
+      });
+      return;
+    }
+
+    if (!existing.passwordHash || !verifyPassword(password, existing.passwordHash)) {
+      res.status(401).json({ error: 'Invalid email or password.' });
+      return;
+    }
+
+    const user: UserSession = { name: existing.name, email: existing.email };
+    const token = signSessionToken(user);
+    setSessionCookie(req, res, token);
+    res.json({ user, token });
+  });
+
+  // Expose destinations JSON safely for static-fallback/Netlify compatibility
+  app.get('/data/destinations-db.json', (_req, res) => {
+    if (!fs.existsSync(DESTINATIONS_DB_PATH)) {
+      res.status(404).json({ error: 'Dataset not found.' });
+      return;
+    }
+    res.sendFile(DESTINATIONS_DB_PATH);
   });
 
   const isProd = process.env.NODE_ENV === 'production';

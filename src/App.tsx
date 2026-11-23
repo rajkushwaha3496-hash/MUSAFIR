@@ -1,14 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { FooterSection } from './components/FooterSection.tsx';
 import { HeroSection } from './components/HeroSection.tsx';
 import { IndiaDestinationDetailModal } from './components/IndiaDestinationDetailModal.tsx';
 import { IndiaDestinationsDirectory } from './components/IndiaDestinationsDirectory.tsx';
 import { Navbar } from './components/Navbar.tsx';
 import { PackagesSection } from './components/PackagesSection.tsx';
-import {
-  StudentTripFinderSection,
-  type StudentFinderState,
-} from './components/StudentTripFinderSection.tsx';
 import { TestimonialsSection } from './components/TestimonialsSection.tsx';
 import { VerificationReportSection } from './components/VerificationReportSection.tsx';
 import {
@@ -22,6 +19,7 @@ import {
   FEATURED_PACKAGES,
   TESTIMONIALS,
 } from './data/travelData.ts';
+import { auth, syncUserProfileToFirestore } from './firebase.ts';
 import type {
   BookingRecord,
   DestinationsReportStats,
@@ -29,10 +27,17 @@ import type {
   IndiaDestination,
   IndiaRegion,
   MusafirDestination,
+  StudentFinderState,
   TravelPackage,
   UserSession,
   VerificationStatus,
 } from './types.ts';
+import {
+  fetchDestinationsApi,
+  fetchDestinationsStatsApi,
+  fetchSessionFromServerApi,
+  logoutServerApi,
+} from './utils/apiClient.ts';
 
 const DEFAULT_FINDER: StudentFinderState = {
   startCity: 'delhi',
@@ -50,21 +55,24 @@ const DEFAULT_FINDER: StudentFinderState = {
   sort: 'best-match',
 };
 
-interface DestinationsApiResponse {
-  total: number;
-  page: number;
-  totalPages: number;
-  limit: number;
-  items: IndiaDestination[];
-  stats: DestinationsReportStats;
-}
-
-interface StatsApiResponse extends DestinationsReportStats {
-  generatedAt: string;
-  byState: Record<string, number>;
-  byCategory: Record<string, number>;
-  byRegion: Record<string, number>;
-}
+const HERO_SEARCH_KEYWORDS: Record<string, string> = {
+  'agra-taj': 'Taj Mahal',
+  'varanasi-kashi': 'Varanasi',
+  kedarnath: 'Kedarnath',
+  rishikesh: 'Rishikesh',
+  munnar: 'Munnar',
+  jaipur: 'Jaipur',
+  amritsar: 'Amritsar',
+  hampi: 'Hampi',
+  madurai: 'Madurai',
+  manali: 'Manali',
+  shimla: 'Shimla',
+  'leh-ladakh': 'Leh Ladakh',
+  goa: 'Goa',
+  alleppey: 'Alleppey',
+  udaipur: 'Udaipur',
+  andaman: 'Andaman',
+};
 
 export default function App() {
   // Hero search & preserved booking state
@@ -115,12 +123,56 @@ export default function App() {
     useState<MusafirDestination | null>(null);
   const [bookingDestId, setBookingDestId] = useState('agra-taj');
   const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
-    window.setTimeout(() => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
       setToast((curr) => (curr === message ? null : curr));
     }, 3600);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Session persistence across reloads (Firebase Auth + server session cookie fallback)
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (!active) return;
+      if (fbUser && fbUser.email) {
+        const display =
+          fbUser.displayName?.trim() || fbUser.email.split('@')[0] || 'Traveler';
+        setUser({ name: display, email: fbUser.email });
+        if (fbUser.emailVerified) {
+          void syncUserProfileToFirestore({
+            uid: fbUser.uid,
+            name: display,
+            email: fbUser.email,
+          }).catch(() => {
+            // Non-blocking profile sync
+          });
+        }
+      } else {
+        const serverUser = await fetchSessionFromServerApi();
+        if (active) {
+          setUser(serverUser);
+        }
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   const scrollToSection = (sectionId: string) => {
@@ -133,11 +185,7 @@ export default function App() {
   // Fetch Verification & Photo Audit Report stats
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/destinations/stats')
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Failed to load database metrics.');
-        return (await res.json()) as StatsApiResponse;
-      })
+    fetchDestinationsStatsApi()
       .then((data) => {
         if (cancelled) return;
         setReportStats({
@@ -164,52 +212,47 @@ export default function App() {
     };
   }, [refreshNonce]);
 
-  // Fetch filtered/sorted 500+ Indian destinations from /api/destinations
+  // Fetch filtered/sorted 500+ Indian destinations with Express + Netlify + Static fallback
   useEffect(() => {
     const controller = new AbortController();
     setLoadingList(true);
     setListError(null);
 
-    const params = new URLSearchParams();
-    if (searchQuery.trim()) params.set('q', searchQuery.trim());
-    if (selectedState !== 'All') params.set('state', selectedState);
-    if (selectedRegion !== 'All') params.set('region', selectedRegion);
-    if (finder.category !== 'All') params.set('category', finder.category);
-    if (finder.budgetTier !== 'all') params.set('budgetTier', finder.budgetTier);
-    if (finder.budgetTier === 'custom') {
-      params.set('maxBudget', String(finder.customMaxBudget));
-    }
-    params.set('days', String(finder.days));
-    params.set('travelers', String(finder.travelers));
-    params.set('travelMode', finder.travelMode);
-    if (finder.season !== 'All') params.set('season', finder.season);
-    if (finder.startCity) params.set('startCity', finder.startCity);
-    if (finder.maxDistanceKm) {
-      params.set('maxDistanceKm', String(finder.maxDistanceKm));
-    }
-    if (selectedVerification !== 'All') {
-      params.set('verificationStatus', selectedVerification);
-    }
-    if (studentFriendlyOnly) params.set('studentFriendly', 'true');
-    if (finder.weekendTrip) params.set('weekendTrip', 'true');
-    if (finder.oneDayTrip) params.set('oneDayTrip', 'true');
-    if (finder.groupTrip) params.set('groupTrip', 'true');
-    params.set('sort', finder.sort);
-    params.set('page', String(page));
-    params.set('limit', '18');
-
     const timer = window.setTimeout(() => {
-      fetch(`/api/destinations?${params.toString()}`, {
-        signal: controller.signal,
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error('Unable to load destinations.');
-          return (await res.json()) as DestinationsApiResponse;
-        })
+      fetchDestinationsApi(
+        {
+          q: searchQuery.trim(),
+          state: selectedState,
+          region: selectedRegion,
+          category: finder.category,
+          budgetTier: finder.budgetTier,
+          maxBudget:
+            finder.budgetTier === 'custom' ? finder.customMaxBudget : null,
+          days: finder.days,
+          travelers: finder.travelers,
+          travelMode: finder.travelMode,
+          season: finder.season,
+          startCity: finder.startCity,
+          maxDistanceKm: finder.maxDistanceKm,
+          verificationStatus: selectedVerification,
+          studentFriendly: studentFriendlyOnly,
+          weekendTrip: finder.weekendTrip,
+          oneDayTrip: finder.oneDayTrip,
+          groupTrip: finder.groupTrip,
+          sort: finder.sort,
+          page,
+          limit: 18,
+        },
+        controller.signal
+      )
         .then((data) => {
+          if (controller.signal.aborted) return;
           setDestinations(data.items || []);
           setTotal(data.total || 0);
           setTotalPages(data.totalPages || 1);
+          if (data.page && data.page !== page) {
+            setPage(data.page);
+          }
           if (data.stats) setReportStats(data.stats);
         })
         .catch((err: unknown) => {
@@ -217,7 +260,7 @@ export default function App() {
           setListError(
             err instanceof Error
               ? err.message
-              : 'Failed to load destinations.'
+              : 'Unable to load destinations right now.'
           );
         })
         .finally(() => {
@@ -259,15 +302,37 @@ export default function App() {
     setRefreshNonce((n) => n + 1);
   }, []);
 
+  const handleCheckInChange = (val: string) => {
+    setCheckIn(val);
+    if (checkOut && val && checkOut < val) {
+      setCheckOut(val);
+    }
+  };
+
+  const handleCheckOutChange = (val: string) => {
+    if (checkIn && val && val < checkIn) {
+      showToast('Check-out date cannot be before check-in date.');
+      setCheckOut(checkIn);
+      return;
+    }
+    setCheckOut(val);
+  };
+
   const handleSearchTrips = (e: React.FormEvent) => {
     e.preventDefault();
+    if (checkIn && checkOut && checkOut < checkIn) {
+      showToast('Check-out date must be on or after check-in date.');
+      return;
+    }
+
     setSearching(true);
     setSelectedRegion('All');
     setSelectedState('All');
 
     const selected = DESTINATIONS.find((d) => d.id === destinationQuery);
     if (selected) {
-      const keyword = selected.name.split('&')[0].trim();
+      const keyword =
+        HERO_SEARCH_KEYWORDS[selected.id] || selected.name.split('&')[0].trim();
       setSearchQuery(keyword);
     } else {
       setSearchQuery('');
@@ -287,7 +352,7 @@ export default function App() {
               heroTravelers === 1 ? 'traveler' : 'travelers'
             }.`
       );
-    }, 280);
+    }, 240);
   };
 
   const handleOpenBookingForDest = (dest: MusafirDestination) => {
@@ -367,6 +432,17 @@ export default function App() {
     showToast(`Trip reserved (${booking.id}) for ${booking.destinationName}.`);
   };
 
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch {
+      // ignore if signed in via server cookie only
+    }
+    await logoutServerApi();
+    setUser(null);
+    showToast('Signed out of MUSAFIR.');
+  };
+
   const modalDestinations = useMemo(
     () =>
       customBookingDest
@@ -390,10 +466,7 @@ export default function App() {
         user={user}
         onNavigate={scrollToSection}
         onOpenAuth={() => setAuthOpen(true)}
-        onLogout={() => {
-          setUser(null);
-          showToast('Signed out of MUSAFIR.');
-        }}
+        onLogout={handleLogout}
         onBookTrip={() => {
           setCustomBookingDest(null);
           setBookingPackage(null);
@@ -413,18 +486,10 @@ export default function App() {
           travelers={heroTravelers}
           searching={searching}
           onDestinationQueryChange={setDestinationQuery}
-          onCheckInChange={setCheckIn}
-          onCheckOutChange={setCheckOut}
+          onCheckInChange={handleCheckInChange}
+          onCheckOutChange={handleCheckOutChange}
           onTravelersChange={setHeroTravelers}
           onSearchTrips={handleSearchTrips}
-        />
-
-        <StudentTripFinderSection
-          finder={finder}
-          totalMatching={total}
-          onChange={updateFinder}
-          onApplyAndScroll={() => scrollToSection('destinations')}
-          onReset={resetAllFilters}
         />
 
         <IndiaDestinationsDirectory

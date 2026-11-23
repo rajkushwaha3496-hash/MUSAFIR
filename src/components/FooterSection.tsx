@@ -21,23 +21,38 @@ export const FooterSection: React.FC<FooterSectionProps> = ({
   const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    if (!email.trim()) {
-      setErrorMsg('Please enter your email address.');
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMsg('Please enter a valid email address.');
       return;
     }
 
     setSubmitting(true);
     try {
+      const { auth, saveSubscriberToFirestore } = await import('../firebase.ts');
+      if (auth.currentUser && auth.currentUser.emailVerified) {
+        void saveSubscriberToFirestore(cleanEmail).catch(() => {});
+      }
+
       const res = await fetch('/api/newsletter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: cleanEmail }),
       });
-      const data = (await res.json()) as { subscribed?: boolean; email?: string; error?: string };
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setErrorMsg('Newsletter service unavailable right now.');
+        return;
+      }
+      const data = (await res.json()) as {
+        subscribed?: boolean;
+        email?: string;
+        error?: string;
+      };
       if (!res.ok) {
         setErrorMsg(data.error ?? 'Subscription failed.');
       } else {
-        setSubscribedEmail(data.email ?? email);
+        setSubscribedEmail(data.email ?? cleanEmail);
         setEmail('');
       }
     } catch {
