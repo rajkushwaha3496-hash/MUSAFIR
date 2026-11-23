@@ -165,7 +165,7 @@ export const FooterSection: React.FC<FooterSectionProps> = ({
                   <Globe className="w-4 h-4" />
                 </a>
                 <a
-                  href="mailto:namaste@musafir.travel"
+                  href="mailto:rajkushwaha3496@gmail.com"
                   aria-label="Email MUSAFIR"
                   className="w-9 h-9 rounded-full border border-white/20 grid place-items-center text-white/80 hover:text-white hover:border-white/50 transition-colors"
                 >
@@ -230,15 +230,25 @@ export const FooterSection: React.FC<FooterSectionProps> = ({
               <ul className="space-y-2.5 text-sm text-white/80">
                 <li className="flex items-center gap-2.5">
                   <Mail className="w-4 h-4 text-[#7fb39c] shrink-0" />
-                  <span>namaste@musafir.travel</span>
+                  <a
+                    href="mailto:rajkushwaha3496@gmail.com"
+                    className="hover:text-white transition-colors break-all"
+                  >
+                    rajkushwaha3496@gmail.com
+                  </a>
                 </li>
                 <li className="flex items-center gap-2.5">
                   <Phone className="w-4 h-4 text-[#7fb39c] shrink-0" />
-                  <span className="font-mono tabular-nums">+91 98110 44290</span>
+                  <a
+                    href="tel:+919277193265"
+                    className="font-mono tabular-nums hover:text-white transition-colors"
+                  >
+                    +91 92771 93265
+                  </a>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <MapPin className="w-4 h-4 text-[#7fb39c] shrink-0 mt-0.5" />
-                  <span>Connaught Place, New Delhi &amp; Bengaluru</span>
+                  <span>Lucknow, Uttar Pradesh</span>
                 </li>
               </ul>
             </div>

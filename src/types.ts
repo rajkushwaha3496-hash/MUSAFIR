@@ -230,3 +230,18 @@ export interface StudentFinderState {
   groupTrip: boolean;
   sort: SortOption;
 }
+
+export interface DestinationMapPoint {
+  id: string;
+  slug: string;
+  name: string;
+  state: string;
+  district: string;
+  region: Exclude<IndiaRegion, 'All'>;
+  category: Exclude<IndiaCategory, 'All'>;
+  lat: number;
+  lon: number;
+  verificationStatus: VerificationStatus;
+  distanceKm: number | null;
+  estimatedDailyStudentCostInr: number;
+}

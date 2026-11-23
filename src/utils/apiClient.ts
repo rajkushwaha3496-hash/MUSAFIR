@@ -6,6 +6,7 @@ import {
 } from '../firebase.ts';
 import type {
   BookingRecord,
+  DestinationMapPoint,
   DestinationsReportStats,
   IndiaDestination,
   TravelMode,
@@ -15,6 +16,7 @@ import type {
 import {
   buildFullStatsPayload,
   getDestinationDetail,
+  queryDestinationMapPoints,
   queryDestinationsList,
   suggestDestinations,
   type DestinationsQueryParams,
@@ -125,17 +127,7 @@ async function tryApiJson<T>(
   }
 }
 
-export async function fetchDestinationsApi(
-  query: DestinationsQueryParams,
-  signal?: AbortSignal
-): Promise<{
-  total: number;
-  page: number;
-  totalPages: number;
-  limit: number;
-  items: IndiaDestination[];
-  stats: DestinationsReportStats;
-}> {
+function buildDestinationParams(query: DestinationsQueryParams): URLSearchParams {
   const params = new URLSearchParams();
   if (query.q) params.set('q', query.q);
   if (query.state && query.state !== 'All') params.set('state', query.state);
@@ -152,6 +144,12 @@ export async function fetchDestinationsApi(
   if (query.travelMode) params.set('travelMode', query.travelMode);
   if (query.season && query.season !== 'All') params.set('season', query.season);
   if (query.startCity) params.set('startCity', query.startCity);
+  if (query.userLat !== null && query.userLat !== undefined) {
+    params.set('userLat', String(query.userLat));
+  }
+  if (query.userLon !== null && query.userLon !== undefined) {
+    params.set('userLon', String(query.userLon));
+  }
   if (query.maxDistanceKm) {
     params.set('maxDistanceKm', String(query.maxDistanceKm));
   }
@@ -165,6 +163,21 @@ export async function fetchDestinationsApi(
   if (query.sort) params.set('sort', query.sort);
   if (query.page) params.set('page', String(query.page));
   if (query.limit) params.set('limit', String(query.limit));
+  return params;
+}
+
+export async function fetchDestinationsApi(
+  query: DestinationsQueryParams,
+  signal?: AbortSignal
+): Promise<{
+  total: number;
+  page: number;
+  totalPages: number;
+  limit: number;
+  items: IndiaDestination[];
+  stats: DestinationsReportStats;
+}> {
+  const params = buildDestinationParams(query);
 
   const apiResult = await tryApiJson<{
     total: number;
@@ -181,6 +194,22 @@ export async function fetchDestinationsApi(
 
   const staticDb = await loadStaticDestinationsDb();
   return queryDestinationsList(staticDb.destinations, query);
+}
+
+export async function fetchDestinationMapPointsApi(
+  query: DestinationsQueryParams,
+  signal?: AbortSignal
+): Promise<DestinationMapPoint[]> {
+  const params = buildDestinationParams(query);
+  const apiResult = await tryApiJson<{ points: DestinationMapPoint[] }>(
+    `/api/destinations/map-points?${params.toString()}`,
+    { signal }
+  );
+  if (apiResult && Array.isArray(apiResult.points)) {
+    return apiResult.points;
+  }
+  const staticDb = await loadStaticDestinationsDb();
+  return queryDestinationMapPoints(staticDb.destinations, query);
 }
 
 export async function fetchDestinationsStatsApi() {
@@ -224,6 +253,8 @@ export async function fetchDestinationDetailApi(
   idOrSlug: string,
   params: {
     startCity?: string;
+    userLat?: number | null;
+    userLon?: number | null;
     days?: number;
     travelers?: number;
     travelMode?: TravelMode;
@@ -231,6 +262,12 @@ export async function fetchDestinationDetailApi(
 ) {
   const sp = new URLSearchParams();
   if (params.startCity) sp.set('startCity', params.startCity);
+  if (params.userLat !== null && params.userLat !== undefined) {
+    sp.set('userLat', String(params.userLat));
+  }
+  if (params.userLon !== null && params.userLon !== undefined) {
+    sp.set('userLon', String(params.userLon));
+  }
   if (params.days) sp.set('days', String(params.days));
   if (params.travelers) sp.set('travelers', String(params.travelers));
   if (params.travelMode) sp.set('travelMode', params.travelMode);

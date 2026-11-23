@@ -8,6 +8,7 @@ import {
   buildFullStatsPayload,
   computeDbStats,
   getDestinationDetail,
+  queryDestinationMapPoints,
   queryDestinationsList,
   suggestDestinations,
 } from './src/utils/destinationEngine.ts';
@@ -362,8 +363,43 @@ async function startServer() {
     res.json({ suggestions: suggestDestinations(db.destinations, q) });
   });
 
+  app.get('/api/destinations/map-points', (req, res) => {
+    const db = readDestinationsDb();
+    const userLat = req.query.userLat ? Number(req.query.userLat) : null;
+    const userLon = req.query.userLon ? Number(req.query.userLon) : null;
+    const points = queryDestinationMapPoints(db.destinations, {
+      q: String(req.query.q || ''),
+      state: String(req.query.state || 'All'),
+      region: String(req.query.region || 'All'),
+      category: String(req.query.category || 'All'),
+      budgetTier: String(req.query.budgetTier || 'all'),
+      maxBudget: req.query.maxBudget ? Number(req.query.maxBudget) : null,
+      days: Number(req.query.days) || 2,
+      travelers: Number(req.query.travelers) || 1,
+      travelMode: (String(req.query.travelMode || 'Train') as TravelMode) || 'Train',
+      season: String(req.query.season || 'All'),
+      startCity: String(req.query.startCity || ''),
+      userLat: userLat !== null && Number.isFinite(userLat) ? userLat : null,
+      userLon: userLon !== null && Number.isFinite(userLon) ? userLon : null,
+      maxDistanceKm: req.query.maxDistanceKm
+        ? Number(req.query.maxDistanceKm)
+        : null,
+      verificationStatus: String(req.query.verificationStatus || 'All'),
+      studentFriendly: req.query.studentFriendly === 'true',
+      weekendTrip: req.query.weekendTrip === 'true',
+      oneDayTrip: req.query.oneDayTrip === 'true',
+      groupTrip: req.query.groupTrip === 'true',
+      maxDurationDays: req.query.maxDurationDays
+        ? Number(req.query.maxDurationDays)
+        : null,
+    });
+    res.json({ points });
+  });
+
   app.get('/api/destinations', (req, res) => {
     const db = readDestinationsDb();
+    const userLat = req.query.userLat ? Number(req.query.userLat) : null;
+    const userLon = req.query.userLon ? Number(req.query.userLon) : null;
     const result = queryDestinationsList(db.destinations, {
       q: String(req.query.q || ''),
       state: String(req.query.state || 'All'),
@@ -376,6 +412,8 @@ async function startServer() {
       travelMode: (String(req.query.travelMode || 'Train') as TravelMode) || 'Train',
       season: String(req.query.season || 'All'),
       startCity: String(req.query.startCity || ''),
+      userLat: userLat !== null && Number.isFinite(userLat) ? userLat : null,
+      userLon: userLon !== null && Number.isFinite(userLon) ? userLon : null,
       maxDistanceKm: req.query.maxDistanceKm
         ? Number(req.query.maxDistanceKm)
         : null,
@@ -396,12 +434,16 @@ async function startServer() {
 
   app.get('/api/destinations/:idOrSlug', (req, res) => {
     const db = readDestinationsDb();
+    const userLat = req.query.userLat ? Number(req.query.userLat) : null;
+    const userLon = req.query.userLon ? Number(req.query.userLon) : null;
     const detail = getDestinationDetail(db.destinations, req.params.idOrSlug, {
       days: req.query.days ? Number(req.query.days) : undefined,
       travelers: req.query.travelers ? Number(req.query.travelers) : undefined,
       travelMode:
         (String(req.query.travelMode || 'Train') as TravelMode) || 'Train',
       startCity: String(req.query.startCity || ''),
+      userLat: userLat !== null && Number.isFinite(userLat) ? userLat : null,
+      userLon: userLon !== null && Number.isFinite(userLon) ? userLon : null,
     });
     if (!detail) {
       res.status(404).json({ error: 'Destination not found.' });

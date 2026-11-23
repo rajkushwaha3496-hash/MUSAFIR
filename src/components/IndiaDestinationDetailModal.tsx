@@ -50,6 +50,9 @@ interface NearbySummary {
 interface IndiaDestinationDetailModalProps {
   destinationId: string | null;
   initialStartCity: string;
+  userLat?: number | null;
+  userLon?: number | null;
+  startLocationLabel?: string;
   initialDays: number;
   initialTravelers: number;
   initialTravelMode: TravelMode;
@@ -64,6 +67,9 @@ export const IndiaDestinationDetailModal: React.FC<
 > = ({
   destinationId,
   initialStartCity,
+  userLat,
+  userLon,
+  startLocationLabel,
   initialDays,
   initialTravelers,
   initialTravelMode,
@@ -116,6 +122,8 @@ export const IndiaDestinationDetailModal: React.FC<
 
     fetchDestinationDetailApi(destinationId, {
       startCity: initialStartCity,
+      userLat,
+      userLon,
       days: initialDays,
       travelers: initialTravelers,
       travelMode: initialTravelMode,
@@ -156,6 +164,8 @@ export const IndiaDestinationDetailModal: React.FC<
   }, [
     destinationId,
     initialStartCity,
+    userLat,
+    userLon,
     initialDays,
     initialTravelers,
     initialTravelMode,
@@ -369,10 +379,10 @@ export const IndiaDestinationDetailModal: React.FC<
 
                 {/* Title & Photo Credits Overlay */}
                 <div className="absolute bottom-4 left-5 right-5 text-white">
-                  <p className="text-xs font-medium text-white/85 mb-1">
-                    {dest.state} · {dest.district} · {dest.region} India
+                  <p className="text-xs font-medium text-white/90 mb-1">
+                    {dest.district} District, {dest.state} · {dest.region} India
                     {dest.distanceKm !== null && dest.distanceKm !== undefined
-                      ? ` · ${dest.distanceKm} km from ${startCityObj?.name || 'selected city'}`
+                      ? ` · ${dest.distanceKm} km from ${startLocationLabel || startCityObj?.name || 'selected city'}`
                       : ''}
                   </p>
                   <h2
@@ -676,18 +686,32 @@ export const IndiaDestinationDetailModal: React.FC<
                       </p>
                     </div>
 
-                    {/* Google Maps Embed */}
+                    {/* Google Maps Location & Coordinates Card */}
                     <div className="rounded-3xl overflow-hidden border border-black/10 bg-[#f7f5f0]">
-                      <div className="px-4 py-3 flex items-center justify-between gap-2 bg-white border-b border-black/8">
-                        <span className="text-xs font-semibold text-[#141714] inline-flex items-center gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-[#1d4738]" />
-                          {dest.lat}, {dest.lon}
-                        </span>
+                      <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 bg-white border-b border-black/8">
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-[#141714] inline-flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-[#1d4738] shrink-0" />
+                            <span>
+                              {dest.district}, {dest.state} ({dest.lat.toFixed(4)}° N,{' '}
+                              {dest.lon.toFixed(4)}° E)
+                            </span>
+                          </span>
+                          {dest.distanceKm !== null &&
+                            dest.distanceKm !== undefined && (
+                              <p className="text-[11px] font-mono text-[#1d4738] pl-5">
+                                {dest.distanceKm} km from{' '}
+                                {startLocationLabel ||
+                                  startCityObj?.name ||
+                                  'selected origin'}
+                              </p>
+                            )}
+                        </div>
                         <a
-                          href={`https://www.google.com/maps?q=${dest.lat},${dest.lon}`}
+                          href={`https://www.google.com/maps/search/?api=1&query=${dest.lat},${dest.lon}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs font-semibold text-[#1d4738] hover:underline inline-flex items-center gap-1"
+                          className="text-xs font-semibold text-[#1d4738] hover:underline inline-flex items-center gap-1 shrink-0"
                         >
                           Open in Google Maps
                           <ExternalLink className="w-3 h-3" />

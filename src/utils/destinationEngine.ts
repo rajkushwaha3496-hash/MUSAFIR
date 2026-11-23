@@ -1,6 +1,7 @@
 import { haversineDistanceKm, STARTING_CITIES } from '../data/indianCities.ts';
 import { calculateStudentBudgetBreakdown } from './budgetCalculator.ts';
 import type {
+  DestinationMapPoint,
   DestinationsReportStats,
   IndiaDestination,
   TravelMode,
@@ -18,6 +19,8 @@ export interface DestinationsQueryParams {
   travelMode?: TravelMode;
   season?: string;
   startCity?: string;
+  userLat?: number | null;
+  userLon?: number | null;
   maxDistanceKm?: number | null;
   verificationStatus?: string;
   studentFriendly?: boolean;
@@ -28,6 +31,30 @@ export interface DestinationsQueryParams {
   sort?: string;
   page?: number;
   limit?: number;
+}
+
+function resolveOriginCoordinates(
+  startCityId: string,
+  userLat?: number | null,
+  userLon?: number | null
+): { lat: number; lon: number } | null {
+  if (
+    userLat !== null &&
+    userLat !== undefined &&
+    userLon !== null &&
+    userLon !== undefined &&
+    Number.isFinite(userLat) &&
+    Number.isFinite(userLon)
+  ) {
+    return { lat: userLat, lon: userLon };
+  }
+  if (!startCityId) return null;
+  const city = STARTING_CITIES.find(
+    (c) =>
+      c.id === startCityId ||
+      c.name.toLowerCase() === startCityId.toLowerCase()
+  );
+  return city ? { lat: city.lat, lon: city.lon } : null;
 }
 
 const MONTH_INDEX: Record<string, number> = {
@@ -228,17 +255,17 @@ export function queryDestinationsList(
   const page = Math.max(1, Number(params.page) || 1);
   const limit = Math.max(1, Math.min(48, Number(params.limit) || 18));
 
-  const startCity = STARTING_CITIES.find(
-    (c) =>
-      c.id === startCityId ||
-      c.name.toLowerCase() === startCityId.toLowerCase()
+  const originCoords = resolveOriginCoordinates(
+    startCityId,
+    params.userLat,
+    params.userLon
   );
 
   const budgetMax = parseBudgetTierMax(budgetTier, customMaxBudget);
 
   const enriched = allDestinations.map((dest) => {
-    const distanceKm = startCity
-      ? haversineDistanceKm(startCity.lat, startCity.lon, dest.lat, dest.lon)
+    const distanceKm = originCoords
+      ? haversineDistanceKm(originCoords.lat, originCoords.lon, dest.lat, dest.lon)
       : null;
     const estimatedBreakdown = calculateStudentBudgetBreakdown({
       budget: dest.budget,
@@ -368,6 +395,122 @@ export function queryDestinationsList(
   };
 }
 
+export function queryDestinationMapPoints(
+  allDestinations: IndiaDestination[],
+  params: DestinationsQueryParams
+): DestinationMapPoint[] {
+  const q = (params.q || '').trim().toLowerCase();
+  const qTokens = q ? q.split(/[\s,&/+-]+/).filter((t) => t.length > 0) : [];
+  const state = params.state || 'All';
+  const region = params.region || 'All';
+  const category = params.category || 'All';
+  const budgetTier = params.budgetTier || 'all';
+  const customMaxBudget = params.maxBudget ?? null;
+  const days = Math.max(1, Math.min(15, Number(params.days) || 2));
+  const travelers = Math.max(1, Math.min(20, Number(params.travelers) || 1));
+  const travelMode: TravelMode = params.travelMode || 'Train';
+  const season = params.season || 'All';
+  const maxDistanceKm = params.maxDistanceKm ?? null;
+  const verificationStatus = params.verificationStatus || 'All';
+  const studentFriendly = Boolean(params.studentFriendly);
+  const weekendTrip = Boolean(params.weekendTrip);
+  const oneDayTrip = Boolean(params.oneDayTrip);
+  const groupTrip = Boolean(params.groupTrip);
+  const maxDurationDays = params.maxDurationDays ?? null;
+
+  const originCoords = resolveOriginCoordinates(
+    params.startCity || '',
+    params.userLat,
+    params.userLon
+  );
+  const budgetMax = parseBudgetTierMax(budgetTier, customMaxBudget);
+
+  const points: DestinationMapPoint[] = [];
+  for (const dest of allDestinations) {
+    if (state !== 'All' && dest.state !== state) continue;
+    if (region !== 'All' && dest.region !== region) continue;
+    if (category !== 'All' && dest.category !== category) continue;
+    if (
+      verificationStatus !== 'All' &&
+      dest.verificationStatus !== verificationStatus
+    ) {
+      continue;
+    }
+    if (studentFriendly && !dest.studentFriendly) continue;
+    if (groupTrip && !dest.groupTrip) continue;
+    if (maxDurationDays && dest.recommendedDays > maxDurationDays) continue;
+    if (season !== 'All' && !matchesSeasonMonth(dest.bestSeason, season)) continue;
+
+    const distanceKm = originCoords
+      ? haversineDistanceKm(originCoords.lat, originCoords.lon, dest.lat, dest.lon)
+      : null;
+
+    if (weekendTrip) {
+      if (distanceKm !== null) {
+        if (distanceKm > 450 && !dest.weekendTrip) continue;
+        if (distanceKm > 600) continue;
+      } else if (!dest.weekendTrip && dest.recommendedDays > 3) {
+        continue;
+      }
+    }
+    if (oneDayTrip) {
+      if (distanceKm !== null) {
+        if (distanceKm > 180) continue;
+      } else if (!dest.oneDayTrip && dest.recommendedDays > 1) {
+        continue;
+      }
+    }
+    if (maxDistanceKm && distanceKm !== null && distanceKm > maxDistanceKm) {
+      continue;
+    }
+
+    if (budgetMax !== null) {
+      const est = calculateStudentBudgetBreakdown({
+        budget: dest.budget,
+        days,
+        travelers,
+        distanceKm,
+        travelMode,
+      });
+      if (est.perPersonTotalInr > budgetMax) continue;
+    }
+
+    if (qTokens.length > 0) {
+      const haystack = [
+        dest.name,
+        dest.state,
+        dest.district,
+        dest.region,
+        dest.category,
+        dest.description,
+        ...dest.tags,
+        ...dest.nearbyAttractions,
+      ]
+        .join(' ')
+        .toLowerCase();
+      const directMatch = haystack.includes(q);
+      const tokenMatch = qTokens.every((tok) => haystack.includes(tok));
+      if (!directMatch && !tokenMatch) continue;
+    }
+
+    points.push({
+      id: dest.id,
+      slug: dest.slug,
+      name: dest.name,
+      state: dest.state,
+      district: dest.district,
+      region: dest.region,
+      category: dest.category,
+      lat: dest.lat,
+      lon: dest.lon,
+      verificationStatus: dest.verificationStatus,
+      distanceKm,
+      estimatedDailyStudentCostInr: dest.budget.estimatedDailyStudentCostInr,
+    });
+  }
+  return points;
+}
+
 export function suggestDestinations(
   allDestinations: IndiaDestination[],
   rawQ: string
@@ -407,6 +550,8 @@ export function getDestinationDetail(
     travelers?: number;
     travelMode?: TravelMode;
     startCity?: string;
+    userLat?: number | null;
+    userLon?: number | null;
   }
 ) {
   const dest = allDestinations.find(
@@ -420,10 +565,14 @@ export function getDestinationDetail(
   );
   const travelers = Math.max(1, Math.min(20, Number(params.travelers) || 1));
   const travelMode: TravelMode = params.travelMode || 'Train';
-  const startCity = STARTING_CITIES.find((c) => c.id === params.startCity);
+  const originCoords = resolveOriginCoordinates(
+    params.startCity || '',
+    params.userLat,
+    params.userLon
+  );
 
-  const distanceKm = startCity
-    ? haversineDistanceKm(startCity.lat, startCity.lon, dest.lat, dest.lon)
+  const distanceKm = originCoords
+    ? haversineDistanceKm(originCoords.lat, originCoords.lon, dest.lat, dest.lon)
     : null;
 
   const estimatedBreakdown = calculateStudentBudgetBreakdown({

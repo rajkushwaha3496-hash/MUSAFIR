@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowUpRight,
   BadgeCheck,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -10,21 +12,27 @@ import {
   ImageOff,
   Images,
   Loader2,
+  LocateFixed,
+  Map as MapIcon,
   MapPin,
+  MousePointerClick,
   Navigation,
   Search,
   ShieldAlert,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { formatINR } from '../data/travelData.ts';
 import { INDIA_STATES_AND_UTS, STARTING_CITIES } from '../data/indianCities.ts';
 import type {
+  DestinationMapPoint,
   IndiaCategory,
   IndiaDestination,
   IndiaRegion,
   StudentFinderState,
   VerificationStatus,
 } from '../types.ts';
+import { IndiaDestinationsMap } from './IndiaDestinationsMap.tsx';
 
 interface SuggestItem {
   id: string;
@@ -47,6 +55,19 @@ interface IndiaDestinationsDirectoryProps {
   selectedVerification: 'All' | VerificationStatus;
   studentFriendlyOnly: boolean;
   finder: StudentFinderState;
+  userCoords: { lat: number; lon: number; label: string } | null;
+  startLocationLabel: string;
+  detectingLocation: boolean;
+  locationError: string | null;
+  locationNotice: string | null;
+  pickingStartOnMap: boolean;
+  mapPoints: DestinationMapPoint[];
+  loadingMap: boolean;
+  onStartCityChange: (cityId: string) => void;
+  onDetectLocation: () => void;
+  onClearGps: () => void;
+  onTogglePickStartOnMap: () => void;
+  onPickOriginCoords: (lat: number, lon: number, label?: string) => void;
   onSearchQueryChange: (q: string) => void;
   onStateChange: (state: string) => void;
   onRegionChange: (region: IndiaRegion) => void;
@@ -112,9 +133,9 @@ const VerificationBadge: React.FC<{ status: VerificationStatus }> = ({
 
 const DestinationCard: React.FC<{
   dest: IndiaDestination;
-  startCityName: string | null;
+  startLocationLabel: string | null;
   onExplore: (id: string) => void;
-}> = ({ dest, startCityName, onExplore }) => {
+}> = ({ dest, startLocationLabel, onExplore }) => {
   const [activeIdx, setActiveIdx] = useState(0);
   const [brokenUrls, setBrokenUrls] = useState<Record<string, boolean>>({});
 
@@ -174,7 +195,7 @@ const DestinationCard: React.FC<{
         <div className="absolute bottom-3.5 left-4 right-4 flex items-end justify-between gap-3 text-white">
           <div className="min-w-0">
             <p className="text-[11px] font-medium text-white/85 truncate">
-              {dest.state} · {dest.district}
+              {dest.district}, {dest.state}
             </p>
             <p className="text-xs font-semibold truncate">
               {activePhoto ? activePhoto.title : 'Photo unavailable'}
@@ -230,9 +251,16 @@ const DestinationCard: React.FC<{
             <span className="truncate">{dest.bestSeason}</span>
           </div>
 
-          <h3 className="font-editorial text-xl sm:text-2xl font-semibold text-[#141714] mb-2 leading-snug">
+          <h3 className="font-editorial text-xl sm:text-2xl font-semibold text-[#141714] mb-1.5 leading-snug">
             {dest.name}
           </h3>
+
+          <p className="inline-flex items-center gap-1 text-xs font-medium text-[#1d4738] mb-2">
+            <MapPin className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {dest.district}, {dest.state} · {dest.region} India
+            </span>
+          </p>
 
           <p className="text-sm text-[#5a6159] leading-relaxed line-clamp-3">
             {dest.description}
@@ -242,7 +270,8 @@ const DestinationCard: React.FC<{
             {dest.distanceKm !== null && dest.distanceKm !== undefined && (
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold bg-[#e7ede9] text-[#1d4738]">
                 <Navigation className="w-3 h-3" />
-                {dest.distanceKm} km{startCityName ? ` from ${startCityName}` : ''}
+                {dest.distanceKm} km
+                {startLocationLabel ? ` from ${startLocationLabel}` : ''}
               </span>
             )}
             {dest.studentFriendly && (
@@ -279,6 +308,179 @@ const DestinationCard: React.FC<{
   );
 };
 
+interface OriginOption {
+  key: string;
+  cityId?: string;
+  name: string;
+  subtitle: string;
+  searchText: string;
+  lat: number;
+  lon: number;
+}
+
+const StartingLocationCombobox: React.FC<{
+  options: OriginOption[];
+  activeLabel: string;
+  activeCityId: string;
+  isCustomOrigin: boolean;
+  onSelectCity: (cityId: string) => void;
+  onSelectCustom: (lat: number, lon: number, label: string) => void;
+}> = ({
+  options,
+  activeLabel,
+  activeCityId,
+  isCustomOrigin,
+  onSelectCity,
+  onSelectCustom,
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => inputRef.current?.focus(), 20);
+    const onDocClick = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    const tokens = query
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (tokens.length === 0) return options.slice(0, 80);
+    return options
+      .filter((opt) => tokens.every((tok) => opt.searchText.includes(tok)))
+      .slice(0, 80);
+  }, [options, query]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          setQuery('');
+          setOpen((prev) => !prev);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Search and select starting location across India"
+        className="inline-flex items-center justify-between gap-2 min-w-[230px] max-w-[300px] bg-white border border-black/12 hover:border-[#1d4738]/40 rounded-full px-4 py-2 text-xs sm:text-sm font-semibold text-[#141714] cursor-pointer shadow-xs transition-colors"
+      >
+        <span className="inline-flex items-center gap-1.5 truncate">
+          <Search className="w-3.5 h-3.5 text-[#1d4738] shrink-0" />
+          <span className="truncate">{activeLabel}</span>
+        </span>
+        <ChevronDown
+          className={`w-4 h-4 text-[#5a6159] shrink-0 transition-transform ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-2 w-[300px] sm:w-[360px] z-40 bg-white rounded-2xl border border-black/12 shadow-2xl overflow-hidden">
+          <div className="p-2.5 border-b border-black/8 bg-[#f7f5f0]">
+            <div className="flex items-center gap-2 bg-white border border-black/10 rounded-xl px-3 py-2">
+              <Search className="w-4 h-4 text-[#1d4738] shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search any city, district, or state in India..."
+                aria-label="Search all India starting locations"
+                className="w-full bg-transparent text-xs sm:text-sm text-[#141714] placeholder:text-[#7c837a] focus:outline-none"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  aria-label="Clear location search"
+                  className="text-[#5a6159] hover:text-[#141714] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-[#5a6159] mt-1.5 px-1 flex items-center justify-between">
+              <span>All 28 States &amp; 8 UTs ({options.length} India hubs)</span>
+              {query && <span>Showing {filtered.length}</span>}
+            </p>
+          </div>
+
+          <ul
+            role="listbox"
+            className="max-h-72 overflow-y-auto divide-y divide-black/5"
+          >
+            {filtered.length === 0 ? (
+              <li className="px-4 py-6 text-center text-xs text-[#5a6159]">
+                No matching Indian city or district found for &ldquo;{query}
+                &rdquo;. Try &ldquo;Pick Start on Map&rdquo; to pin any exact
+                place.
+              </li>
+            ) : (
+              filtered.map((opt) => {
+                const isActive =
+                  !isCustomOrigin && Boolean(opt.cityId && opt.cityId === activeCityId);
+                return (
+                  <li key={opt.key}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        if (opt.cityId) {
+                          onSelectCity(opt.cityId);
+                        } else {
+                          onSelectCustom(opt.lat, opt.lon, opt.name);
+                        }
+                      }}
+                      className={`w-full px-3.5 py-2.5 text-left flex items-center justify-between gap-2.5 hover:bg-[#f7f5f0] cursor-pointer transition-colors ${
+                        isActive ? 'bg-[#e7ede9]/60' : ''
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs sm:text-sm font-semibold text-[#141714] truncate">
+                          {opt.name}
+                        </p>
+                        <p className="text-[11px] text-[#5a6159] truncate">
+                          {opt.subtitle}
+                        </p>
+                      </div>
+                      {isActive && (
+                        <Check className="w-4 h-4 text-[#1d4738] shrink-0" />
+                      )}
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProps> = ({
   destinations,
   total,
@@ -292,6 +494,19 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
   selectedVerification,
   studentFriendlyOnly,
   finder,
+  userCoords,
+  startLocationLabel,
+  detectingLocation,
+  locationError,
+  locationNotice,
+  pickingStartOnMap,
+  mapPoints,
+  loadingMap,
+  onStartCityChange,
+  onDetectLocation,
+  onClearGps,
+  onTogglePickStartOnMap,
+  onPickOriginCoords,
   onSearchQueryChange,
   onStateChange,
   onRegionChange,
@@ -304,8 +519,65 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
 }) => {
   const [suggestions, setSuggestions] = useState<SuggestItem[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
+  const [showMap, setShowMap] = useState(true);
+  const knownOriginCatalogRef = useRef<Record<string, OriginOption>>({});
 
-  const startCityObj = STARTING_CITIES.find((c) => c.id === finder.startCity);
+  const allOriginOptions = useMemo(() => {
+    const dict = knownOriginCatalogRef.current;
+    for (const city of STARTING_CITIES) {
+      const key = `${city.name.toLowerCase()}|${city.state.toLowerCase()}`;
+      dict[key] = {
+        key,
+        cityId: city.id,
+        name: city.name,
+        subtitle: city.state,
+        searchText: `${city.name} ${city.state}`.toLowerCase(),
+        lat: city.lat,
+        lon: city.lon,
+      };
+    }
+    for (const pt of mapPoints) {
+      const key = `${pt.name.toLowerCase()}|${pt.state.toLowerCase()}`;
+      if (!dict[key]) {
+        const sub =
+          pt.district && pt.district.toLowerCase() !== pt.name.toLowerCase()
+            ? `${pt.district}, ${pt.state}`
+            : pt.state;
+        dict[key] = {
+          key,
+          name: pt.name,
+          subtitle: sub,
+          searchText: `${pt.name} ${pt.district} ${pt.state} ${pt.region}`.toLowerCase(),
+          lat: pt.lat,
+          lon: pt.lon,
+        };
+      }
+      if (pt.district) {
+        const distKey = `${pt.district.toLowerCase()}|${pt.state.toLowerCase()}`;
+        if (!dict[distKey]) {
+          dict[distKey] = {
+            key: distKey,
+            name: pt.district,
+            subtitle: `${pt.district} District, ${pt.state}`,
+            searchText: `${pt.district} ${pt.state} ${pt.region}`.toLowerCase(),
+            lat: pt.lat,
+            lon: pt.lon,
+          };
+        }
+      }
+    }
+    return Object.values(dict);
+  }, [mapPoints]);
+
+  const startCityObj =
+    STARTING_CITIES.find((c) => c.id === finder.startCity) || STARTING_CITIES[0];
+  const originCoords = userCoords
+    ? userCoords
+    : {
+        lat: startCityObj.lat,
+        lon: startCityObj.lon,
+        label: startCityObj.name,
+      };
 
   useEffect(() => {
     const trimmed = searchQuery.trim();
@@ -385,8 +657,105 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
         </div>
       </div>
 
-      {/* Search + Advanced Filter Bar */}
-      <div className="bg-white rounded-3xl border border-black/8 p-4 sm:p-5 mb-8 shadow-[0_6px_24px_rgba(20,23,20,0.03)] space-y-4">
+      {/* Search + Starting Location + Advanced Filter Bar */}
+      <div className="bg-white rounded-3xl border border-black/8 p-4 sm:p-5 mb-6 shadow-[0_6px_24px_rgba(20,23,20,0.03)] space-y-4">
+        {/* User Starting Location Row */}
+        <div className="bg-[#f7f5f0] rounded-2xl p-3.5 sm:p-4 border border-black/8 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-2.5">
+            <div className="w-9 h-9 rounded-full bg-[#1d4738] text-white grid place-items-center shrink-0">
+              <MapPin className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[#1d4738]">
+                Where are you starting your trip from?
+              </p>
+              <p className="text-xs text-[#5a6159]">
+                Distances on the map and destination cards are measured from{' '}
+                <strong className="text-[#141714]">{originCoords.label}</strong>{' '}
+                <span className="font-mono text-[11px]">
+                  ({originCoords.lat.toFixed(2)}° N,{' '}
+                  {originCoords.lon.toFixed(2)}° E)
+                </span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <StartingLocationCombobox
+              options={allOriginOptions}
+              activeLabel={
+                userCoords
+                  ? `${userCoords.label}`
+                  : `${startCityObj.name}, ${startCityObj.state}`
+              }
+              activeCityId={finder.startCity}
+              isCustomOrigin={Boolean(userCoords)}
+              onSelectCity={onStartCityChange}
+              onSelectCustom={(lat, lon, label) =>
+                onPickOriginCoords(lat, lon, label)
+              }
+            />
+
+            <button
+              type="button"
+              onClick={onDetectLocation}
+              disabled={detectingLocation}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#1d4738] hover:bg-[#15362a] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold cursor-pointer transition-colors"
+            >
+              {detectingLocation ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <LocateFixed className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {detectingLocation ? 'Detecting...' : 'Detect My Location'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowMap(true);
+                onTogglePickStartOnMap();
+              }}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border text-xs sm:text-sm font-semibold cursor-pointer transition-colors ${
+                pickingStartOnMap
+                  ? 'bg-amber-600 border-amber-600 text-white hover:bg-amber-700'
+                  : 'bg-white border-black/10 text-[#141714] hover:bg-[#ebe5da]'
+              }`}
+            >
+              <MousePointerClick className="w-3.5 h-3.5" />
+              <span>
+                {pickingStartOnMap ? 'Cancel Map Pick' : 'Pick Start on Map'}
+              </span>
+            </button>
+
+            {userCoords && (
+              <button
+                type="button"
+                onClick={onClearGps}
+                aria-label="Reset custom location and use city"
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-full bg-white border border-black/10 text-xs font-semibold text-[#5a6159] hover:text-[#141714] cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Reset</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {locationNotice && (
+          <p className="text-xs font-medium text-[#1d4738] bg-[#e7ede9] border border-[#1d4738]/20 rounded-xl px-3.5 py-2">
+            {locationNotice}
+          </p>
+        )}
+
+        {locationError && (
+          <p className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2">
+            {locationError}
+          </p>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
           {/* Search Input with Autocomplete Suggestions */}
           <div className="lg:col-span-5 relative">
@@ -515,6 +884,67 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
         </div>
       </div>
 
+      {/* Interactive All-India Map Plotting Every Matching Destination as Dots */}
+      <div className="bg-white rounded-3xl border border-black/8 overflow-hidden mb-8 shadow-[0_8px_28px_rgba(20,23,20,0.04)]">
+        <div className="px-4 sm:px-6 py-3.5 bg-[#f7f5f0]/80 border-b border-black/8 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <MapIcon className="w-4 h-4 text-[#1d4738] shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold text-[#141714]">
+                India Destinations Map ·{' '}
+                <span className="font-mono text-[#1d4738]">
+                  {mapPoints.length}
+                </span>{' '}
+                Places Plotted as Dots
+              </h3>
+              <p className="text-[11px] text-[#5a6159]">
+                Click any dot to see exact district, state, coordinates, and
+                distance from {originCoords.label}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-[11px] font-medium text-[#5a6159]">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-sky-600 ring-2 ring-sky-200" />
+              Your Start
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#1d4738]" />
+              Verified
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-600" />
+              Needs Review
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-stone-600" />
+              Unverified
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowMap((v) => !v)}
+              className="px-3 py-1.5 rounded-full bg-white border border-black/10 text-xs font-semibold text-[#141714] hover:bg-[#ebe5da] cursor-pointer transition-colors"
+            >
+              {showMap ? 'Hide Map' : 'Show Map'}
+            </button>
+          </div>
+        </div>
+
+        {showMap && (
+          <IndiaDestinationsMap
+            points={mapPoints}
+            originCoords={originCoords}
+            isGpsOrigin={Boolean(userCoords)}
+            loading={loadingMap}
+            pickingStartOnMap={pickingStartOnMap}
+            onTogglePickStart={onTogglePickStartOnMap}
+            onPickOriginCoords={onPickOriginCoords}
+            onExploreDestination={onExploreDestination}
+          />
+        )}
+      </div>
+
       {/* Loading / Error / Empty / Grid States */}
       {loading ? (
         <div className="bg-white rounded-3xl border border-black/6 p-14 text-center">
@@ -566,7 +996,7 @@ export const IndiaDestinationsDirectory: React.FC<IndiaDestinationsDirectoryProp
               <DestinationCard
                 key={dest.id}
                 dest={dest}
-                startCityName={startCityObj?.name ?? null}
+                startLocationLabel={startLocationLabel || originCoords.label}
                 onExplore={onExploreDestination}
               />
             ))}

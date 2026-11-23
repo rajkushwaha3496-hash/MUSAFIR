@@ -14,6 +14,7 @@ import {
   DestinationModal,
 } from './components/WanderlyModals.tsx';
 import { WhyChooseUsSection } from './components/WhyChooseUsSection.tsx';
+import { STARTING_CITIES } from './data/indianCities.ts';
 import {
   DESTINATIONS,
   FEATURED_PACKAGES,
@@ -22,6 +23,7 @@ import {
 import { auth, syncUserProfileToFirestore } from './firebase.ts';
 import type {
   BookingRecord,
+  DestinationMapPoint,
   DestinationsReportStats,
   IndiaCategory,
   IndiaDestination,
@@ -33,6 +35,7 @@ import type {
   VerificationStatus,
 } from './types.ts';
 import {
+  fetchDestinationMapPointsApi,
   fetchDestinationsApi,
   fetchDestinationsStatsApi,
   fetchSessionFromServerApi,
@@ -80,6 +83,20 @@ export default function App() {
   const [loadingList, setLoadingList] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
 
+  // Interactive All-India map dots & starting location (city or GPS)
+  const [mapPoints, setMapPoints] = useState<DestinationMapPoint[]>([]);
+  const [loadingMap, setLoadingMap] = useState(true);
+  const [userCoords, setUserCoords] = useState<{
+    lat: number;
+    lon: number;
+    label: string;
+  } | null>(null);
+  const [detectingLocation, setDetectingLocation] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [pickingStartOnMap, setPickingStartOnMap] = useState(false);
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
   // Live audit report & verification breakdown
   const [reportStats, setReportStats] = useState<DestinationsReportStats | null>(
     null
@@ -121,6 +138,15 @@ export default function App() {
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
       }
+    };
+  }, []);
+
+  // Listen for Google Maps Platform quota/auth events from main.tsx
+  useEffect(() => {
+    const onQuotaExceeded = () => setMapsQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => {
+      window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
     };
   }, []);
 
@@ -214,6 +240,8 @@ export default function App() {
           travelMode: finder.travelMode,
           season: finder.season,
           startCity: finder.startCity,
+          userLat: userCoords?.lat ?? null,
+          userLon: userCoords?.lon ?? null,
           maxDistanceKm: finder.maxDistanceKm,
           verificationStatus: selectedVerification,
           studentFriendly: studentFriendlyOnly,
@@ -257,6 +285,7 @@ export default function App() {
     };
   }, [
     finder,
+    userCoords,
     searchQuery,
     selectedState,
     selectedRegion,
@@ -266,13 +295,218 @@ export default function App() {
     refreshNonce,
   ]);
 
+  // Fetch ALL matching destinations for the interactive India map dots
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoadingMap(true);
+
+    const timer = window.setTimeout(() => {
+      fetchDestinationMapPointsApi(
+        {
+          q: searchQuery.trim(),
+          state: selectedState,
+          region: selectedRegion,
+          category: finder.category,
+          budgetTier: finder.budgetTier,
+          maxBudget:
+            finder.budgetTier === 'custom' ? finder.customMaxBudget : null,
+          days: finder.days,
+          travelers: finder.travelers,
+          travelMode: finder.travelMode,
+          season: finder.season,
+          startCity: finder.startCity,
+          userLat: userCoords?.lat ?? null,
+          userLon: userCoords?.lon ?? null,
+          maxDistanceKm: finder.maxDistanceKm,
+          verificationStatus: selectedVerification,
+          studentFriendly: studentFriendlyOnly,
+          weekendTrip: finder.weekendTrip,
+          oneDayTrip: finder.oneDayTrip,
+          groupTrip: finder.groupTrip,
+        },
+        controller.signal
+      )
+        .then((points) => {
+          if (!controller.signal.aborted) {
+            setMapPoints(points || []);
+          }
+        })
+        .catch((err: unknown) => {
+          if (err instanceof Error && err.name === 'AbortError') return;
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setLoadingMap(false);
+          }
+        });
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    finder,
+    userCoords,
+    searchQuery,
+    selectedState,
+    selectedRegion,
+    selectedVerification,
+    studentFriendlyOnly,
+    refreshNonce,
+  ]);
+
   const updateFinder = useCallback((patch: Partial<StudentFinderState>) => {
     setFinder((prev) => ({ ...prev, ...patch }));
     setPage(1);
   }, []);
 
+  const handleStartCityChange = useCallback((cityId: string) => {
+    setUserCoords(null);
+    setLocationError(null);
+    setLocationNotice(null);
+    setPickingStartOnMap(false);
+    setFinder((prev) => ({ ...prev, startCity: cityId }));
+    setPage(1);
+  }, []);
+
+  const handleClearGps = useCallback(() => {
+    setUserCoords(null);
+    setLocationError(null);
+    setLocationNotice(null);
+    setPickingStartOnMap(false);
+    setPage(1);
+  }, []);
+
+  const handlePickOriginCoords = useCallback(
+    (lat: number, lon: number, label?: string) => {
+      const cleanLabel = label?.trim() || 'Custom Map Pin';
+      setUserCoords({ lat, lon, label: cleanLabel });
+      setLocationError(null);
+      setLocationNotice(null);
+      setPickingStartOnMap(false);
+      setPage(1);
+      showToast(
+        `Trip starting point set to ${cleanLabel} (${lat}° N, ${lon}° E).`
+      );
+    },
+    [showToast]
+  );
+
+  const detectNetworkApproxLocation = useCallback(async (): Promise<{
+    lat: number;
+    lon: number;
+    label: string;
+  } | null> => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch('https://get.geojs.io/v1/ip/geo.json', {
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        latitude?: string | number;
+        longitude?: string | number;
+        city?: string;
+        country_code?: string;
+      };
+      const lat = Number(data.latitude);
+      const lon = Number(data.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      const cleanCity = (data.city || '').trim();
+      const label = cleanCity
+        ? data.country_code && data.country_code !== 'IN'
+          ? `Near ${cleanCity}, ${data.country_code}`
+          : `Near ${cleanCity}`
+        : 'Approximate Network Location';
+      return {
+        lat: Number(lat.toFixed(4)),
+        lon: Number(lon.toFixed(4)),
+        label,
+      };
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }, []);
+
+  const handleDetectLocation = useCallback(async () => {
+    setDetectingLocation(true);
+    setLocationError(null);
+    setLocationNotice(null);
+    setPickingStartOnMap(false);
+
+    const runNetworkFallback = async (reason: 'denied' | 'iframe' | 'unavailable') => {
+      const approx = await detectNetworkApproxLocation();
+      setDetectingLocation(false);
+      if (approx) {
+        setUserCoords(approx);
+        setPage(1);
+        const why =
+          reason === 'iframe'
+            ? 'Exact GPS is blocked inside embedded preview frames'
+            : reason === 'denied'
+              ? 'Browser GPS permission is blocked'
+              : 'Exact GPS is unavailable';
+        setLocationNotice(
+          `${why}, so we detected your approximate network location (${approx.label}). You can also choose any Indian city or click "Pick Start on Map".`
+        );
+        showToast(`Starting location set to ${approx.label}.`);
+        return;
+      }
+
+      setLocationError(
+        reason === 'iframe'
+          ? 'Exact GPS is blocked in this embedded preview and network lookup was blocked. Please pick your starting city or click "Pick Start on Map".'
+          : 'Location permission is blocked in your browser. Please pick your starting city or click "Pick Start on Map".'
+      );
+    };
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      await runNetworkFallback('unavailable');
+      return;
+    }
+
+    const inIframe = (() => {
+      try {
+        return window.self !== window.top;
+      } catch {
+        return true;
+      }
+    })();
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(4));
+        const lon = Number(pos.coords.longitude.toFixed(4));
+        setUserCoords({ lat, lon, label: 'Your GPS Location' });
+        setDetectingLocation(false);
+        setPage(1);
+        showToast(
+          `Starting location set to your GPS coordinates (${lat}° N, ${lon}° E).`
+        );
+      },
+      (err) => {
+        const reason =
+          err.code === err.PERMISSION_DENIED
+            ? inIframe
+              ? 'iframe'
+              : 'denied'
+            : 'unavailable';
+        void runNetworkFallback(reason);
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  }, [detectNetworkApproxLocation, showToast]);
+
   const resetAllFilters = useCallback(() => {
     setFinder(DEFAULT_FINDER);
+    setUserCoords(null);
+    setLocationError(null);
+    setLocationNotice(null);
+    setPickingStartOnMap(false);
     setSearchQuery('');
     setSelectedState('All');
     setSelectedRegion('All');
@@ -428,8 +662,33 @@ export default function App() {
     [bookingPackage]
   );
 
+  const startLocationLabel = useMemo(() => {
+    if (userCoords) return userCoords.label;
+    return (
+      STARTING_CITIES.find((c) => c.id === finder.startCity)?.name ||
+      'New Delhi'
+    );
+  }, [userCoords, finder.startCity]);
+
   return (
     <div className="min-h-screen bg-[#f7f5f0] text-[#141714]">
+      {mapsQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
       <Navbar
         user={user}
         onNavigate={scrollToSection}
@@ -470,6 +729,19 @@ export default function App() {
           selectedVerification={selectedVerification}
           studentFriendlyOnly={studentFriendlyOnly}
           finder={finder}
+          userCoords={userCoords}
+          startLocationLabel={startLocationLabel}
+          detectingLocation={detectingLocation}
+          locationError={locationError}
+          locationNotice={locationNotice}
+          pickingStartOnMap={pickingStartOnMap}
+          mapPoints={mapPoints}
+          loadingMap={loadingMap}
+          onStartCityChange={handleStartCityChange}
+          onDetectLocation={handleDetectLocation}
+          onClearGps={handleClearGps}
+          onTogglePickStartOnMap={() => setPickingStartOnMap((prev) => !prev)}
+          onPickOriginCoords={handlePickOriginCoords}
           onSearchQueryChange={(q) => {
             setSearchQuery(q);
             setPage(1);
@@ -528,6 +800,9 @@ export default function App() {
       <IndiaDestinationDetailModal
         destinationId={selectedDestinationId}
         initialStartCity={finder.startCity}
+        userLat={userCoords?.lat ?? null}
+        userLon={userCoords?.lon ?? null}
+        startLocationLabel={startLocationLabel}
         initialDays={finder.days}
         initialTravelers={finder.travelers}
         initialTravelMode={finder.travelMode}

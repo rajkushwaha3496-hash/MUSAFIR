@@ -11,6 +11,7 @@ import type {
 import {
   buildFullStatsPayload,
   getDestinationDetail,
+  queryDestinationMapPoints,
   queryDestinationsList,
   suggestDestinations,
 } from '../../src/utils/destinationEngine.ts';
@@ -226,8 +227,43 @@ export default async (req: Request): Promise<Response> => {
     });
   }
 
+  if (method === 'GET' && cleanPath === '/destinations/map-points') {
+    const sp = url.searchParams;
+    const uLat = sp.get('userLat') ? Number(sp.get('userLat')) : null;
+    const uLon = sp.get('userLon') ? Number(sp.get('userLon')) : null;
+    const points = queryDestinationMapPoints(db.destinations, {
+      q: sp.get('q') || '',
+      state: sp.get('state') || 'All',
+      region: sp.get('region') || 'All',
+      category: sp.get('category') || 'All',
+      budgetTier: sp.get('budgetTier') || 'all',
+      maxBudget: sp.get('maxBudget') ? Number(sp.get('maxBudget')) : null,
+      days: Number(sp.get('days')) || 2,
+      travelers: Number(sp.get('travelers')) || 1,
+      travelMode: (sp.get('travelMode') as TravelMode) || 'Train',
+      season: sp.get('season') || 'All',
+      startCity: sp.get('startCity') || '',
+      userLat: uLat !== null && Number.isFinite(uLat) ? uLat : null,
+      userLon: uLon !== null && Number.isFinite(uLon) ? uLon : null,
+      maxDistanceKm: sp.get('maxDistanceKm')
+        ? Number(sp.get('maxDistanceKm'))
+        : null,
+      verificationStatus: sp.get('verificationStatus') || 'All',
+      studentFriendly: sp.get('studentFriendly') === 'true',
+      weekendTrip: sp.get('weekendTrip') === 'true',
+      oneDayTrip: sp.get('oneDayTrip') === 'true',
+      groupTrip: sp.get('groupTrip') === 'true',
+      maxDurationDays: sp.get('maxDurationDays')
+        ? Number(sp.get('maxDurationDays'))
+        : null,
+    });
+    return jsonResponse({ points });
+  }
+
   if (method === 'GET' && cleanPath === '/destinations') {
     const sp = url.searchParams;
+    const uLat = sp.get('userLat') ? Number(sp.get('userLat')) : null;
+    const uLon = sp.get('userLon') ? Number(sp.get('userLon')) : null;
     const result = queryDestinationsList(db.destinations, {
       q: sp.get('q') || '',
       state: sp.get('state') || 'All',
@@ -240,6 +276,8 @@ export default async (req: Request): Promise<Response> => {
       travelMode: (sp.get('travelMode') as TravelMode) || 'Train',
       season: sp.get('season') || 'All',
       startCity: sp.get('startCity') || '',
+      userLat: uLat !== null && Number.isFinite(uLat) ? uLat : null,
+      userLon: uLon !== null && Number.isFinite(uLon) ? uLon : null,
       maxDistanceKm: sp.get('maxDistanceKm')
         ? Number(sp.get('maxDistanceKm'))
         : null,
@@ -261,11 +299,15 @@ export default async (req: Request): Promise<Response> => {
   if (method === 'GET' && cleanPath.startsWith('/destinations/')) {
     const idOrSlug = decodeURIComponent(cleanPath.slice('/destinations/'.length));
     const sp = url.searchParams;
+    const uLat = sp.get('userLat') ? Number(sp.get('userLat')) : null;
+    const uLon = sp.get('userLon') ? Number(sp.get('userLon')) : null;
     const detail = getDestinationDetail(db.destinations, idOrSlug, {
       days: sp.get('days') ? Number(sp.get('days')) : undefined,
       travelers: sp.get('travelers') ? Number(sp.get('travelers')) : undefined,
       travelMode: (sp.get('travelMode') as TravelMode) || 'Train',
       startCity: sp.get('startCity') || '',
+      userLat: uLat !== null && Number.isFinite(uLat) ? uLat : null,
+      userLon: uLon !== null && Number.isFinite(uLon) ? uLon : null,
     });
     if (!detail) return jsonResponse({ error: 'Destination not found.' }, 404);
     return jsonResponse(detail);
